@@ -1,0 +1,6 @@
+package: biblio
+import:
+- package: github.com/ZhangGuangxu/netbuffer
+  version: c5a8b62fbd4f3bafe840782651be1533e1ce2a07
+- package: github.com/ZhangGuangxu/circularqueue
+  version: 33f45d191ac2fa3e80492e376c0b6f8795f01321

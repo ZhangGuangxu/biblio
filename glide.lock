@@ -1,0 +1,8 @@
+hash: 58d490ebed4113c9f3adf044c31248117e4543f5dc43536a74ce320f278591b0
+updated: 2018-05-19T15:58:10.0821929+08:00
+imports:
+- name: github.com/ZhangGuangxu/circularqueue
+  version: 33f45d191ac2fa3e80492e376c0b6f8795f01321
+- name: github.com/ZhangGuangxu/netbuffer
+  version: c5a8b62fbd4f3bafe840782651be1533e1ce2a07
+testImports: []
