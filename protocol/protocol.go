@@ -8,10 +8,13 @@ type ProtoFactory interface {
 	Release(protoID int16, x interface{}) error
 }
 
+// C2S protocol
 const (
-	C2SLoginID int16 = 200
+	C2SAuthID      int16 = 100
+	C2SHeartbeatID int16 = 101
 )
 
+// S2C protocol
 const (
-	S2CLoginID int16 = 200
+	S2CAuthID int16 = 500
 )

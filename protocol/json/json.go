@@ -7,16 +7,27 @@ import (
 	"sync"
 )
 
-// C2SLogin protocol login
-type C2SLogin struct {
+// C2SAuth protocol
+type C2SAuth struct {
 	UID   int64  `json:"uid"`
 	Token string `json:"token"`
+}
+
+// S2CAuth protocol
+type S2CAuth struct {
+	Passed bool `json:"passed"`
+}
+
+// C2SHeartbeat protocol
+type C2SHeartbeat struct {
 }
 
 // ProtoFactory is a factory instance to create json instance.
 var ProtoFactory = &factory{
 	mapProtoID2Pool: map[int16]*sync.Pool{
-		proto.C2SLoginID: &sync.Pool{New: func() interface{} { return &C2SLogin{} }},
+		proto.C2SAuthID:      &sync.Pool{New: func() interface{} { return &C2SAuth{} }},
+		proto.S2CAuthID:      &sync.Pool{New: func() interface{} { return &S2CAuth{} }},
+		proto.C2SHeartbeatID: &sync.Pool{New: func() interface{} { return &C2SHeartbeat{} }},
 	},
 }
 

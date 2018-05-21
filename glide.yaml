@@ -3,4 +3,6 @@ import:
 - package: github.com/ZhangGuangxu/netbuffer
   version: c5a8b62fbd4f3bafe840782651be1533e1ce2a07
 - package: github.com/ZhangGuangxu/circularqueue
-  version: 33f45d191ac2fa3e80492e376c0b6f8795f01321
+  version: 87b946895486fab5fd9318b0fab583d754d61711
+- package: github.com/ZhangGuangxu/timingwheelm
+  version: 4f4158c54b328f61793c541beff791726c3d8a99

@@ -1,8 +1,10 @@
-hash: 58d490ebed4113c9f3adf044c31248117e4543f5dc43536a74ce320f278591b0
-updated: 2018-05-19T15:58:10.0821929+08:00
+hash: 10a7f7dcf5c95d4a7decefbc4c3eceed6dfd005ccb6ed4563fc657de384b3be7
+updated: 2018-05-22T00:20:45.2765562+08:00
 imports:
 - name: github.com/ZhangGuangxu/circularqueue
-  version: 33f45d191ac2fa3e80492e376c0b6f8795f01321
+  version: 87b946895486fab5fd9318b0fab583d754d61711
 - name: github.com/ZhangGuangxu/netbuffer
   version: c5a8b62fbd4f3bafe840782651be1533e1ce2a07
+- name: github.com/ZhangGuangxu/timingwheelm
+  version: 4f4158c54b328f61793c541beff791726c3d8a99
 testImports: []

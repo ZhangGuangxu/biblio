@@ -5,9 +5,3 @@ type message struct {
 	protoID int16
 	proto   interface{}
 }
-
-func dispatchMessage(player *Player, msg *message) {
-	if fn, ok := mapProtocol2Handler[msg.protoID]; ok {
-		fn(player, msg)
-	}
-}

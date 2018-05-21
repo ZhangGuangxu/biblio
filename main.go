@@ -7,11 +7,13 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	atom "sync/atomic"
 	"syscall"
 	"time"
 )
 
+var serverInst *Server
 var needQuit func() bool
 
 func quitChecker(quit *uint32) func() bool {
@@ -26,36 +28,43 @@ func main() {
 
 	var quit uint32
 	needQuit = quitChecker(&quit)
+	setQuit := func() {
+		atom.StoreUint32(&quit, 1)
+	}
+
+	var wg sync.WaitGroup
 
 	// signal catcher
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	sigQuit := make(chan bool, 1)
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		defer log.Println("signal catcher goroutine quit")
 
+		delay := 50 * time.Millisecond
+		t := time.NewTimer(delay)
+
 		for {
-			if q := atom.LoadUint32(&quit); q == 1 {
-				sigQuit <- true
+			if needQuit() {
 				break
 			}
 
+			t.Reset(delay)
 			select {
 			case sig := <-sigs:
 				log.Println("catch signal:", sig)
-				atom.StoreUint32(&quit, 1)
-				sigQuit <- true
+				setQuit()
 				return
-			case <-time.After(50 * time.Millisecond):
-				// nothing to do
+			case <-t.C:
 			}
 		}
 	}()
 
-	done := make(chan bool, 1)
-	server := NewServer()
+	serverInst = NewServer()
+	wg.Add(1)
 	// run the server
-	go server.run(&quit, done)
+	go serverInst.run(&wg)
 
 	// console command input
 	scanner := bufio.NewScanner(os.Stdin)
@@ -63,15 +72,13 @@ func main() {
 		ucl := strings.ToUpper(scanner.Text())
 		//log.Println(ucl)
 		if ucl == "QUIT" {
-			atom.StoreUint32(&quit, 1)
+			setQuit()
 			break
 		}
 		//log.Println("scanner looping ?")
 	}
 
-	log.Println("waiting for sigQuit ...")
-	<-sigQuit
-	log.Println("waiting for listener and connections closing ...")
-	<-done
+	log.Println("waiting for serverInst to quit ...")
+	wg.Wait()
 	log.Println("main goroutine quit")
 }
