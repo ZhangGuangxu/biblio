@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
+	twm "github.com/ZhangGuangxu/timingwheelm"
+	"log"
 	"sync"
 	"time"
-
-	twm "github.com/ZhangGuangxu/timingwheelm"
 )
 
 var errNoToken = errors.New("no token")
@@ -73,5 +73,9 @@ func (a *auth) clearToken(uid int64) {
 }
 
 func (a *auth) startTimingWheel() {
-	go a.tw.Run(needQuit, func() { serverInst.wgDone() })
+	serverInst.wgAddOne()
+	go a.tw.Run(needQuit, func() {
+		log.Println("auth timingwheel quit")
+		serverInst.wgDone()
+	})
 }

@@ -61,7 +61,12 @@ func main() {
 		}
 	}()
 
-	serverInst = NewServer()
+	var err error
+	serverInst, err = NewServer()
+	if err != nil {
+		log.Printf("NewServer() returns error [%v]\n", err)
+		return
+	}
 	wg.Add(1)
 	// run the server
 	go serverInst.run(&wg)

@@ -66,7 +66,11 @@ func (p *Player) isOnline() bool {
 	return !p.client.isClosed()
 }
 
-// unload make sure it just get invoked once.
+func (p *Player) kick() {
+	p.client.close()
+}
+
+// make sure this function just get invoked once.
 func (p *Player) unload() {
 	close(p.unloadFlag)
 }
@@ -166,4 +170,12 @@ func (p *Player) bindClient(c *Client) error {
 	}
 
 	return nil
+}
+
+func (p *Player) uid() int64 {
+	return p.playerBaseData.uid
+}
+
+func (p *Player) lastHeartbeatTime() time.Time {
+	return p.playerHeartbeatModule.lastTime
 }
