@@ -74,7 +74,7 @@ func (a *auth) clearToken(uid int64) {
 
 func (a *auth) startTimingWheel() {
 	serverInst.wgAddOne()
-	go a.tw.Run(needQuit, func() {
+	go a.tw.Run(getQuit, func() {
 		log.Println("auth timingwheel quit")
 		serverInst.wgDone()
 	})

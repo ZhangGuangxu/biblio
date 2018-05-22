@@ -5,4 +5,4 @@ import:
 - package: github.com/ZhangGuangxu/circularqueue
   version: 87b946895486fab5fd9318b0fab583d754d61711
 - package: github.com/ZhangGuangxu/timingwheelm
-  version: 4f4158c54b328f61793c541beff791726c3d8a99
+  version: 5191300ef2fad5c05ee407bfa7dbd1408e1ec409

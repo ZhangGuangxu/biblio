@@ -118,19 +118,12 @@ func (b *Server) doBind() {
 	defer b.wgDone()
 	defer log.Println("doBind quit")
 
-	delay := 50 * time.Millisecond
-	t := time.NewTimer(delay)
-
 	for {
-		if needQuit() {
-			break
-		}
-
-		t.Reset(delay)
 		select {
 		case req := <-b.bindReqs:
 			b.bind(req)
-		case <-t.C:
+		case <-getQuit():
+			return
 		}
 	}
 }
@@ -177,18 +170,11 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 		defer b.wgDone()
 		defer log.Println("listener closer quit")
 
-		delay := 50 * time.Millisecond
-		t := time.NewTimer(delay)
-
 		for {
-			if needQuit() {
+			select {
+			case <-getQuit():
 				ln.Close()
 				return
-			}
-
-			t.Reset(delay)
-			select {
-			case <-t.C:
 			}
 		}
 	}()
@@ -271,7 +257,7 @@ func (item *clientItem) Release() {
 
 func (b *Server) startClientTimingWheel() {
 	b.wgAddOne()
-	go b.twClient.Run(needQuit, func() {
+	go b.twClient.Run(getQuit, func() {
 		log.Println("client timingwheel quit")
 		b.wgDone()
 	})
@@ -292,7 +278,7 @@ func (item *playerKickItem) Release() {
 
 func (b *Server) startPlayerKickTimingWheel() {
 	b.wgAddOne()
-	go b.twPlayerKick.Run(needQuit, func() {
+	go b.twPlayerKick.Run(getQuit, func() {
 		log.Println("player kick timingwheel quit")
 		b.wgDone()
 	})
@@ -316,7 +302,7 @@ func (item *playerUnloadItem) Release() {
 
 func (b *Server) startPlayerUnloadTimingWheel() {
 	b.wgAddOne()
-	go b.twPlayerUnload.Run(needQuit, func() {
+	go b.twPlayerUnload.Run(getQuit, func() {
 		log.Println("player unload timingwheel quit")
 		b.wgDone()
 	})

@@ -10,26 +10,33 @@ import (
 	"sync"
 	atom "sync/atomic"
 	"syscall"
-	"time"
 )
 
 var serverInst *Server
 var needQuit func() bool
-
-func quitChecker(quit *uint32) func() bool {
-	return func() bool {
-		return atom.LoadUint32(quit) == 1
-	}
-}
+var getQuit func() chan bool
 
 func main() {
 	log.Println("runtime.NumCPU():", runtime.NumCPU())
 	//runtime.GOMAXPROCS(runtime.NumCPU())
 
-	var quit uint32
-	needQuit = quitChecker(&quit)
+	var closed int32
+	quit := make(chan bool)
+	needQuit = func() bool {
+		select {
+		case <-quit:
+			return true
+		default:
+			return false
+		}
+	}
+	getQuit = func() chan bool {
+		return quit
+	}
 	setQuit := func() {
-		atom.StoreUint32(&quit, 1)
+		if atom.CompareAndSwapInt32(&closed, 0, 1) {
+			close(quit)
+		}
 	}
 
 	var wg sync.WaitGroup
@@ -42,21 +49,14 @@ func main() {
 		defer wg.Done()
 		defer log.Println("signal catcher goroutine quit")
 
-		delay := 50 * time.Millisecond
-		t := time.NewTimer(delay)
-
 		for {
-			if needQuit() {
-				break
-			}
-
-			t.Reset(delay)
 			select {
 			case sig := <-sigs:
 				log.Println("catch signal:", sig)
 				setQuit()
 				return
-			case <-t.C:
+			case <-getQuit():
+				return
 			}
 		}
 	}()
