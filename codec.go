@@ -13,8 +13,7 @@ const (
 
 // Codec is a interface that groups Encode,Decode methods and so on.
 type Codec interface {
-	SetClient(client *Client)
-	OnData(buf *netbuffer.Buffer) error
+	OnData(buf *netbuffer.Buffer, client *Client) error
 	Decode(protoID int16, data []byte) (proto interface{}, err error)
 	Encode(proto interface{}) (data []byte, err error)
 	proto.ProtoFactory

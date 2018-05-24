@@ -2,6 +2,7 @@ package main
 
 import (
 	proto "biblio/protocol"
+	"sync"
 	//protojson "biblio/protocol/json"
 	"time"
 	//"log"
@@ -10,6 +11,8 @@ import (
 // PlayerHeartbeatModule handles heart beat
 type PlayerHeartbeatModule struct {
 	PlayerModule
+
+	mux      sync.Mutex
 	lastTime time.Time
 }
 
@@ -20,7 +23,15 @@ func newPlayerHeartbeatModule(p *Player) *PlayerHeartbeatModule {
 }
 
 func (m *PlayerHeartbeatModule) getLastTime() time.Time {
+	m.mux.Lock()
+	defer m.mux.Unlock()
 	return m.lastTime
+}
+
+func (m *PlayerHeartbeatModule) setLastTime(t time.Time) {
+	m.mux.Lock()
+	defer m.mux.Unlock()
+	m.lastTime = t
 }
 
 func (m *PlayerHeartbeatModule) handle(msg *message) {
@@ -31,5 +42,5 @@ func (m *PlayerHeartbeatModule) handle(msg *message) {
 }
 
 func (m *PlayerHeartbeatModule) handleHeartbeat(msg *message) {
-	m.lastTime = time.Now()
+	m.setLastTime(time.Now())
 }

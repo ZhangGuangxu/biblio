@@ -22,12 +22,19 @@ func dispatchMessageToPlayer(player *Player, msg *message) {
 	}
 }
 
-// Player wraps a game player
+// Player wraps a game player. Zero value is invalid.
 type Player struct {
-	client *Client
+	bindReqs   chan *bindReqToPlayer
+	unbindReqs chan bool
 
-	running    int32
-	unloadFlag chan bool
+	recver *messageBuffer // take message from recver
+	sender *messageBuffer // add message to sender
+
+	toStop  int32
+	running int32
+
+	unloadFlagGuard int32
+	unloadFlag      chan bool
 
 	playerBaseData   *PlayerBaseData
 	playerBaseModule *PlayerBaseModule
@@ -35,9 +42,12 @@ type Player struct {
 	playerHeartbeatModule *PlayerHeartbeatModule
 }
 
-func newPlayer(c *Client) *Player {
+func newPlayer(r *messageBuffer, s *messageBuffer) *Player {
 	p := &Player{
-		running:        0,
+		bindReqs:       make(chan *bindReqToPlayer),
+		unbindReqs:     make(chan bool),
+		recver:         r,
+		sender:         s,
 		unloadFlag:     make(chan bool),
 		playerBaseData: &PlayerBaseData{},
 	}
@@ -45,6 +55,160 @@ func newPlayer(c *Client) *Player {
 	p.playerBaseModule = newPlayerBaseModule(p)
 	p.playerHeartbeatModule = newPlayerHeartbeatModule(p)
 	return p
+}
+
+func (p *Player) reqBind(req *bindReqToPlayer) bool {
+	select {
+	case p.bindReqs <- req:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *Player) reqUnbind() bool {
+	select {
+	case p.unbindReqs <- true:
+		return true
+	default:
+		return false
+	}
+}
+
+// TODO: after a player created, invoke startBinder
+func (p *Player) startBinder() {
+	serverInst.wgAddOne()
+	go p.doBind()
+}
+
+func (p *Player) doBind() {
+	defer serverInst.wgDone()
+
+	d := 50 * time.Millisecond
+	t := time.NewTimer(d)
+
+	for {
+		if needQuit() {
+			break
+		}
+		if p.needUnload() {
+			break
+		}
+
+		t.Reset(d)
+		select {
+		case req := <-p.bindReqs:
+			p.bind(req)
+		case <-p.unbindReqs:
+			p.unbind()
+		case <-t.C:
+		}
+	}
+}
+
+func (p *Player) bind(req *bindReqToPlayer) {
+	p.setToStop(true)
+
+	d := time.Millisecond
+	maxT := req.endTime.Sub(time.Now())
+	var loopCnt int
+	if maxT > 0 {
+		loopCnt = int(maxT) / int(d)
+	}
+	var t *time.Ticker
+	if loopCnt > 0 {
+		t = time.NewTicker(d)
+	}
+	var succ bool
+
+	for i := 0; i < loopCnt; i++ {
+		if needQuit() {
+			return
+		}
+		if p.needUnload() {
+			return
+		}
+
+		if !p.isRunning() {
+			succ = true
+			break
+		}
+
+		select {
+		case <-t.C:
+		}
+	}
+
+	if succ {
+		// TODO: 通过sender向客户端发送一个通知
+		// p.client.closeRead()
+		// // TODO: 发送一个proto，通知玩家“账号在其它客户端登录，当前客户端被迫下线”
+		// p.client.delayCloseWrite(delay)
+
+		// TODO:
+		// 通知p.recver停止接收
+		// 通知p.sender停止发送，但是可能单独发送一个通知
+
+		p.recver = req.recverForPlayer
+		p.sender = req.senderForPlayer
+		p.setToStop(false)
+		p.start()
+	}
+}
+
+func (p *Player) unbind() {
+	p.setToStop(true)
+
+	d := time.Millisecond
+	maxT := 5 * time.Second
+	loopCnt := int(maxT / d)
+	t := time.NewTicker(d)
+	var succ bool
+
+	for i := 0; i < loopCnt; i++ {
+		if needQuit() {
+			return
+		}
+		if p.needUnload() {
+			return
+		}
+
+		if !p.isRunning() {
+			succ = true
+			break
+		}
+
+		select {
+		case <-t.C:
+		}
+	}
+
+	if succ {
+		// TODO: 通过sender向客户端发送一个通知
+		// p.client.closeRead()
+		// // TODO: 发送一个proto，通知玩家“账号在其它客户端登录，当前客户端被迫下线”
+		// p.client.delayCloseWrite(delay)
+
+		// TODO:
+		// 通知p.recver停止接收
+		// 通知p.sender停止发送，但是可能单独发送一个通知
+
+		p.recver = nil
+		p.sender = nil
+		p.setToStop(false)
+	}
+}
+
+func (p *Player) setToStop(b bool) {
+	var v int32
+	if b {
+		v = 1
+	}
+	atom.StoreInt32(&p.toStop, v)
+}
+
+func (p *Player) needStop() bool {
+	return atom.LoadInt32(&p.toStop) == 1
 }
 
 func (p *Player) setRunning(r bool) {
@@ -56,23 +220,18 @@ func (p *Player) setRunning(r bool) {
 }
 
 func (p *Player) isRunning() bool {
-	if atom.LoadInt32(&p.running) == 1 {
-		return true
-	}
-	return false
+	return atom.LoadInt32(&p.running) == 1
 }
 
 func (p *Player) isOnline() bool {
-	return !p.client.isClosed()
-}
-
-func (p *Player) kick() {
-	p.client.close()
+	return p.isRunning()
 }
 
 // make sure this function just get invoked once.
 func (p *Player) unload() {
-	close(p.unloadFlag)
+	if atom.CompareAndSwapInt32(&p.unloadFlagGuard, 0, 1) {
+		close(p.unloadFlag)
+	}
 }
 
 func (p *Player) needUnload() bool {
@@ -86,6 +245,14 @@ func (p *Player) needUnload() bool {
 	}
 
 	return false
+}
+
+func (p *Player) start() {
+	p.setRunning(true)
+	p.playerHeartbeatModule.setLastTime(time.Now())
+	serverInst.addPlayerToKick(p)
+	serverInst.wgAddOne()
+	go p.run()
 }
 
 func (p *Player) run() {
@@ -104,72 +271,41 @@ func (p *Player) run() {
 		if p.needUnload() {
 			break
 		}
-
-		t.Reset(delay)
-		if p.client.hasIncomingMessage(t) {
-			p.client.handleAllIncomingMessage(p)
-		}
-		if !p.isOnline() {
+		if p.needStop() {
 			break
 		}
+
+		t.Reset(delay)
+		p.handleMsg(t)
+	}
+}
+
+func (p *Player) handleMsg(t *time.Timer) {
+	for {
+		if needQuit() {
+			break
+		}
+		if p.needUnload() {
+			break
+		}
+		if p.needStop() {
+			break
+		}
+
+		msg := p.recver.takeMessage(t)
+		if msg == nil {
+			break
+		}
+
+		dispatchMessageToPlayer(p, msg)
+		messageCodec.Release(msg.protoID, msg.proto)
 	}
 }
 
 func (p *Player) sendProto(protoID int16, proto interface{}) {
 	if p.isOnline() {
-		p.client.addOutgoingMessage(protoID, proto)
+		p.sender.addMessage(&message{protoID, proto})
 	}
-}
-
-func (p *Player) start(c *Client) {
-	p.client = c
-	p.setRunning(true)
-	serverInst.wgAddOne()
-	go p.run()
-}
-
-func (p *Player) bindClient(c *Client) error {
-	if c == nil {
-		return errBindNilClient
-	}
-
-	delay := 50 * time.Millisecond
-
-	if p.client == nil {
-		p.start(c)
-	} else {
-		if p.client != c {
-			p.client.closeRead()
-
-			// TODO: 发送一个proto，通知玩家“账号在其它客户端登录，当前客户端被迫下线”
-
-			p.client.delayCloseWrite(delay)
-		} else {
-			return errBindSameClient
-		}
-
-		serverInst.wgAddOne()
-		go func() {
-			defer serverInst.wgDone()
-
-			for {
-				if needQuit() {
-					break
-				}
-				if p.needUnload() {
-					break
-				}
-				if !p.isRunning() {
-					p.start(c)
-					break
-				}
-
-				time.Sleep(delay)
-			}
-		}()
-	}
-
-	return nil
 }
 
 func (p *Player) uid() int64 {
@@ -177,5 +313,5 @@ func (p *Player) uid() int64 {
 }
 
 func (p *Player) lastHeartbeatTime() time.Time {
-	return p.playerHeartbeatModule.lastTime
+	return p.playerHeartbeatModule.getLastTime()
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	twm "github.com/ZhangGuangxu/timingwheelm"
+	twmm "github.com/ZhangGuangxu/timingwheelmm"
 	"log"
 	"sync"
 	"time"
@@ -12,30 +12,16 @@ var errNoToken = errors.New("no token")
 var auther, _ = newAuth()
 var itemLifetime = 12 * time.Second
 
-type authItem struct {
-	uid        int64
-	createTime time.Time
-}
+type authItem int64
 
-func newAuthItem(uid int64) *authItem {
-	return &authItem{
-		uid:        uid,
-		createTime: time.Now(),
-	}
-}
-
-func (item *authItem) ShouldRelease() bool {
-	return time.Now().Sub(item.createTime) > itemLifetime
-}
-
-func (item *authItem) Release() {
-	auther.clearToken(item.uid)
+func (item authItem) Release() {
+	auther.delToken(int64(item))
 }
 
 type auth struct {
 	mux    sync.Mutex
 	tokens map[int64]string
-	tw     *twm.TimingWheel
+	tw     *twmm.TimingWheel
 }
 
 func newAuth() (*auth, error) {
@@ -43,19 +29,20 @@ func newAuth() (*auth, error) {
 		tokens: make(map[int64]string, 100),
 	}
 	var err error
-	a.tw, err = twm.NewTimingWheel(itemLifetime, 120)
+	a.tw, err = twmm.NewTimingWheel(itemLifetime, 120)
 	return a, err
 }
 
+// @public
 func (a *auth) putToken(uid int64, token string) {
-	a.mux.Lock()
-	a.tokens[uid] = token
-	a.mux.Unlock()
+	a.tw.AddItem(authItem(uid))
 
-	// 不要放到上面的临界区中，否则会造成潜在的死锁
-	a.tw.AddItem(newAuthItem(uid))
+	a.mux.Lock()
+	defer a.mux.Unlock()
+	a.tokens[uid] = token
 }
 
+// @public
 func (a *auth) compareToken(uid int64, token string) (bool, error) {
 	a.mux.Lock()
 	t, ok := a.tokens[uid]
@@ -66,12 +53,14 @@ func (a *auth) compareToken(uid int64, token string) (bool, error) {
 	return t == token, nil
 }
 
-func (a *auth) clearToken(uid int64) {
+// @public
+func (a *auth) delToken(uid int64) {
 	a.mux.Lock()
+	defer a.mux.Unlock()
 	delete(a.tokens, uid)
-	a.mux.Unlock()
 }
 
+// @public
 func (a *auth) startTimingWheel() {
 	serverInst.wgAddOne()
 	go a.tw.Run(getQuit, func() {

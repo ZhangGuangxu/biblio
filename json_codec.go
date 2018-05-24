@@ -11,7 +11,6 @@ import (
 var errInvalidMsgLength = errors.New("invalid message length")
 
 type jsonCodec struct {
-	client *Client
 	proto.ProtoFactory
 }
 
@@ -21,11 +20,7 @@ func newJSONCodec() *jsonCodec {
 	}
 }
 
-func (c *jsonCodec) SetClient(client *Client) {
-	c.client = client
-}
-
-func (c *jsonCodec) OnData(buf *netbuffer.Buffer) error {
+func (c *jsonCodec) OnData(buf *netbuffer.Buffer, client *Client) error {
 	for buf.ReadableBytes() >= headerByteCount {
 		length := int(buf.PeekInt32())
 		if length > maxDataLen || length < 0 {
@@ -41,7 +36,7 @@ func (c *jsonCodec) OnData(buf *netbuffer.Buffer) error {
 				return err
 			}
 
-			c.client.addIncomingMessage(protoID, proto)
+			client.addIncomingMessage(protoID, proto)
 		} else {
 			break
 		}

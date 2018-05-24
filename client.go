@@ -5,9 +5,9 @@ import (
 	protojson "biblio/protocol/json"
 	ccq "github.com/ZhangGuangxu/circularqueue"
 	"github.com/ZhangGuangxu/netbuffer"
+	"io"
 	"log"
 	"net"
-	"sync"
 	atom "sync/atomic"
 	"time"
 )
@@ -44,22 +44,12 @@ type Client struct {
 	conn     *net.TCPConn
 	incoming *netbuffer.Buffer // 接收客户端数据的缓冲区
 	outgoing *netbuffer.Buffer // 向客户端发送数据的缓冲区
-	cc       Codec
 
 	// Client自己处理的消息
 	selfHandleMsgs *ccq.CircularQueue
 
-	newIncomingMessage chan bool
-	imux               sync.Mutex
-	// 解码器解码出来的消息的队列
-	incomingMessagesToAdd  *ccq.CircularQueue
-	incomingMessagesToTake *ccq.CircularQueue
-
-	newOutgoingMessage chan bool
-	omux               sync.Mutex
-	// 编码器要编码的消息的队列
-	outgoingMessagesToAdd  *ccq.CircularQueue
-	outgoingMessagesToTake *ccq.CircularQueue
+	sender *messageBuffer // add message to sender
+	recver *messageBuffer // take message from recver
 
 	routineCnt   int32
 	toClose      int32
@@ -67,24 +57,25 @@ type Client struct {
 	toCloseWrite chan bool
 }
 
-func newClient(c *net.TCPConn, rcc Codec) *Client {
+func newClient(c *net.TCPConn) *Client {
 	client := &Client{
-		conn:                   c,
-		incoming:               netbuffer.NewBuffer(),
-		outgoing:               netbuffer.NewBuffer(),
-		cc:                     rcc,
-		newIncomingMessage:     make(chan bool, 1),
-		incomingMessagesToAdd:  ccq.NewCircularQueue(),
-		incomingMessagesToTake: ccq.NewCircularQueue(),
-		newOutgoingMessage:     make(chan bool, 1),
-		outgoingMessagesToAdd:  ccq.NewCircularQueue(),
-		outgoingMessagesToTake: ccq.NewCircularQueue(),
-		routineCnt:             maxRoutineCount,
-		toCloseRead:            make(chan bool, 1),
-		toCloseWrite:           make(chan bool, 1),
+		conn:           c,
+		incoming:       netbuffer.NewBuffer(),
+		outgoing:       netbuffer.NewBuffer(),
+		selfHandleMsgs: ccq.NewCircularQueue(),
+		sender:         newMessageBuffer(),
+		recver:         newMessageBuffer(),
+		routineCnt:     maxRoutineCount,
+		toCloseRead:    make(chan bool, 1),
+		toCloseWrite:   make(chan bool, 1),
 	}
-	rcc.SetClient(client)
 	return client
+}
+
+// Release releases this client.
+func (c *Client) Release() {
+	serverInst.removeClient(c)
+	c.close()
 }
 
 func (c *Client) isClosed() bool {
@@ -141,6 +132,7 @@ func (c *Client) handleRead() {
 	defer c.conn.CloseRead()
 
 	tmpBuf := make([]byte, maxDataLen)
+	var eof bool
 
 	for {
 		if needQuit() {
@@ -168,6 +160,8 @@ func (c *Client) handleRead() {
 		if err != nil {
 			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
 				// nothing to do
+			} else if err == io.EOF {
+				eof = true
 			} else {
 				c.close()
 				log.Println(err)
@@ -178,13 +172,18 @@ func (c *Client) handleRead() {
 			if useTmpBuf {
 				c.incoming.Append(buf)
 			}
-			err := c.cc.OnData(c.incoming)
+			err := messageCodec.OnData(c.incoming, c)
 			if err != nil {
 				c.close()
 				log.Println(err)
 				break
 			}
 			c.handleMsgs()
+		}
+		if eof {
+			c.close()
+			log.Println("EOF")
+			break
 		}
 	}
 }
@@ -220,10 +219,13 @@ func (c *Client) handleAuth(msg *message) {
 		return
 	}
 
-	auther.clearToken(req.UID)
+	auther.delToken(req.UID)
+	serverInst.authReceived(c)
 	if same {
+		// TODO: Send a message to nofity this client that auth succeed.
 		serverInst.reqBind(req.UID, c)
 	} else {
+		// TODO: Send a message to nofity this client what is wrong?
 		c.close()
 	}
 }
@@ -235,50 +237,7 @@ func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 		return
 	}
 
-	c.imux.Lock()
-	c.incomingMessagesToAdd.Push(msg)
-	c.imux.Unlock()
-
-	c.incomingMessageAdded()
-}
-
-func (c *Client) incomingMessageAdded() {
-	select {
-	case c.newIncomingMessage <- true:
-	default:
-	}
-}
-
-func (c *Client) hasIncomingMessage(t *time.Timer) bool {
-	select {
-	case <-c.newIncomingMessage:
-		return true
-	case <-t.C:
-		return false
-	}
-}
-
-func (c *Client) handleAllIncomingMessage(player *Player) {
-	c.imux.Lock()
-	c.incomingMessagesToAdd, c.incomingMessagesToTake = c.incomingMessagesToTake, c.incomingMessagesToAdd
-	c.imux.Unlock()
-
-	for !c.incomingMessagesToTake.IsEmpty() {
-		m, err := c.incomingMessagesToTake.Pop()
-		if err != nil {
-			c.close()
-			break
-		}
-
-		v, ok := m.(*message)
-		if !ok {
-			c.close()
-			break
-		}
-
-		dispatchMessageToPlayer(player, v)
-		c.cc.Release(v.protoID, v.proto)
-	}
+	c.sender.addMessage(msg)
 }
 
 func (c *Client) handleWrite() {
@@ -287,7 +246,6 @@ func (c *Client) handleWrite() {
 	defer c.conn.CloseWrite()
 
 	t := time.NewTimer(delay)
-	var outgoing bool
 
 	for {
 		if needQuit() {
@@ -300,9 +258,7 @@ func (c *Client) handleWrite() {
 			break
 		}
 
-		if outgoing {
-			c.handleAllOutgoingMessage()
-		}
+		c.handleOutgoingMessage(t)
 
 		if c.outgoing.ReadableBytes() > 0 {
 			c.conn.SetWriteDeadline(time.Now().Add(delay))
@@ -320,60 +276,26 @@ func (c *Client) handleWrite() {
 			if n > 0 {
 				c.outgoing.Retrieve(n)
 			}
-		} else {
-			t.Reset(delay)
-			select {
-			case <-c.newOutgoingMessage:
-				outgoing = true
-			case <-t.C:
-				outgoing = false
-			}
 		}
 	}
 }
 
-func (c *Client) addOutgoingMessage(protoID int16, proto interface{}) {
-	c.omux.Lock()
-	c.outgoingMessagesToAdd.Push(&message{protoID, proto})
-	c.omux.Unlock()
-
-	c.outgoingMessageAdded()
-}
-
-func (c *Client) outgoingMessageAdded() {
-	select {
-	case c.newOutgoingMessage <- true:
-	default:
-	}
-}
-
-func (c *Client) handleAllOutgoingMessage() {
-	c.omux.Lock()
-	c.outgoingMessagesToAdd, c.outgoingMessagesToTake = c.outgoingMessagesToTake, c.outgoingMessagesToAdd
-	c.omux.Unlock()
-
-	for !c.outgoingMessagesToTake.IsEmpty() {
-		m, err := c.outgoingMessagesToTake.Pop()
-		if err != nil {
-			c.close()
+func (c *Client) handleOutgoingMessage(timer *time.Timer) {
+	for {
+		msg := c.recver.takeMessage(timer)
+		if msg == nil {
 			break
 		}
 
-		v, ok := m.(*message)
-		if !ok {
-			c.close()
-			break
-		}
-
-		data, err := c.cc.Encode(v.proto)
-		c.cc.Release(v.protoID, v.proto)
+		data, err := messageCodec.Encode(msg.proto)
+		messageCodec.Release(msg.protoID, msg.proto)
 		if err != nil {
 			c.close()
 			break
 		}
 
 		c.outgoing.AppendInt32(int32(2 + len(data)))
-		c.outgoing.AppendInt16(v.protoID)
+		c.outgoing.AppendInt16(msg.protoID)
 		c.outgoing.Append(data)
 	}
 }

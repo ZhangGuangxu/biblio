@@ -1,7 +1,7 @@
 package main
 
 import (
-	twm "github.com/ZhangGuangxu/timingwheelm"
+	twmm "github.com/ZhangGuangxu/timingwheelmm"
 	"log"
 	"net"
 	"sync"
@@ -10,9 +10,11 @@ import (
 
 var maxConnectionCount int
 var serverAddress string // "ip:port", for example: "127.0.0.1:10001", or ":10001"
-var codec Codec
+var messageCodec Codec
 
 var clientWaitAuthMaxTime = 5 * time.Second
+var bindProcessMaxTime = 5 * time.Second // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
+var kickProcessMaxTime = 5 * time.Second // kick player多久后未完成认为处理超时
 var heartbeatTime = 7 * time.Second
 var playerKickTime = 2 * heartbeatTime
 var playerUnloadTime = 10 * time.Minute
@@ -20,12 +22,7 @@ var playerUnloadTime = 10 * time.Minute
 func init() {
 	maxConnectionCount = 2000
 	serverAddress = "127.0.0.1:59632"
-	codec = newJSONCodec()
-}
-
-type bindReq struct {
-	uid    int64
-	client *Client
+	messageCodec = newJSONCodec()
 }
 
 // Server wrap a server
@@ -33,15 +30,18 @@ type Server struct {
 	muxp    sync.Mutex
 	players map[int64]*Player
 
-	twPlayerKick   *twm.TimingWheel
-	twPlayerUnload *twm.TimingWheel
+	twPlayerKick   *twmm.TimingWheel
+	twPlayerUnload *twmm.TimingWheel
 
 	muxc    sync.Mutex
 	clients map[*Client]bool
 
-	twClient *twm.TimingWheel
+	twClient *twmm.TimingWheel // 用于等待客户端发送auth消息超时
 
-	bindReqs chan *bindReq
+	muxx      sync.Mutex
+	xBindReqs map[int64]interface{}
+
+	newXBindReqAdd chan bool
 
 	wg *sync.WaitGroup
 }
@@ -50,22 +50,23 @@ type Server struct {
 // You MUST use this function to create a server instance.
 func NewServer() (*Server, error) {
 	s := &Server{
-		players:  make(map[int64]*Player, 1000),
-		clients:  make(map[*Client]bool, maxConnectionCount/10),
-		bindReqs: make(chan *bindReq, 100),
-		wg:       &sync.WaitGroup{},
+		players:        make(map[int64]*Player, 1000),
+		clients:        make(map[*Client]bool, maxConnectionCount/10),
+		xBindReqs:      make(map[int64]interface{}, 100),
+		newXBindReqAdd: make(chan bool, 1),
+		wg:             &sync.WaitGroup{},
 	}
 
 	var err error
-	s.twClient, err = twm.NewTimingWheel(clientWaitAuthMaxTime, 50)
+	s.twClient, err = twmm.NewTimingWheel(clientWaitAuthMaxTime, 50)
 	if err != nil {
 		return nil, err
 	}
-	s.twPlayerKick, err = twm.NewTimingWheel(playerKickTime, 140)
+	s.twPlayerKick, err = twmm.NewTimingWheel(playerKickTime, 140)
 	if err != nil {
 		return nil, err
 	}
-	s.twPlayerUnload, err = twm.NewTimingWheel(playerUnloadTime, 100)
+	s.twPlayerUnload, err = twmm.NewTimingWheel(playerUnloadTime, 100)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +75,11 @@ func NewServer() (*Server, error) {
 
 func (b *Server) addPlayer(uid int64, p *Player) {
 	b.muxp.Lock()
+	defer b.muxp.Unlock()
 	b.players[uid] = p
-	b.muxp.Unlock()
+}
 
+func (b *Server) addPlayerToKick(p *Player) {
 	b.twPlayerKick.AddItem(&playerKickItem{p})
 }
 
@@ -95,7 +98,11 @@ func (b *Server) addClient(c *Client) {
 	b.clients[c] = true
 	b.muxc.Unlock()
 
-	b.twClient.AddItem(newClientItem(c))
+	b.twClient.AddItem(c)
+}
+
+func (b *Server) authReceived(c *Client) {
+	b.twClient.DelItem(c)
 }
 
 func (b *Server) removeClient(c *Client) {
@@ -108,45 +115,6 @@ func (b *Server) clientCount() int {
 	b.muxc.Lock()
 	defer b.muxc.Unlock()
 	return len(b.clients)
-}
-
-func (b *Server) reqBind(uid int64, c *Client) {
-	b.bindReqs <- &bindReq{uid, c}
-}
-
-func (b *Server) doBind() {
-	defer b.wgDone()
-	defer log.Println("doBind quit")
-
-	for {
-		select {
-		case req := <-b.bindReqs:
-			b.bind(req)
-		case <-getQuit():
-			return
-		}
-	}
-}
-
-func (b *Server) bind(req *bindReq) {
-	b.muxp.Lock()
-	defer b.muxp.Unlock()
-	b.muxc.Lock()
-	defer b.muxc.Unlock()
-
-	p, ok := b.players[req.uid]
-	if !ok {
-		return
-	}
-
-	_, ok = b.clients[req.client]
-	if !ok {
-		return
-	}
-
-	if err := p.bindClient(req.client); err == errBindSameClient {
-		req.client.close()
-	}
 }
 
 func (b *Server) run(rwg *sync.WaitGroup) {
@@ -179,8 +147,7 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 		}
 	}()
 
-	b.wgAddOne()
-	go b.doBind()
+	b.startDoBind()
 
 	b.startClientTimingWheel()
 	b.startPlayerKickTimingWheel()
@@ -206,7 +173,7 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 				conn.Close()
 				time.Sleep(50 * time.Millisecond)
 			} else {
-				client := newClient(conn, codec)
+				client := newClient(conn)
 				b.addClient(client)
 				b.wgAdd(2)
 				go client.handleRead()
@@ -232,78 +199,4 @@ func (b *Server) wgAdd(delta int) {
 
 func (b *Server) wgDone() {
 	b.wg.Done()
-}
-
-type clientItem struct {
-	c          *Client
-	createTime time.Time
-}
-
-func newClientItem(c *Client) *clientItem {
-	return &clientItem{
-		c:          c,
-		createTime: time.Now(),
-	}
-}
-
-func (item *clientItem) ShouldRelease() bool {
-	return time.Now().Sub(item.createTime) > clientWaitAuthMaxTime
-}
-
-func (item *clientItem) Release() {
-	serverInst.removeClient(item.c)
-	item.c.close()
-}
-
-func (b *Server) startClientTimingWheel() {
-	b.wgAddOne()
-	go b.twClient.Run(getQuit, func() {
-		log.Println("client timingwheel quit")
-		b.wgDone()
-	})
-}
-
-type playerKickItem struct {
-	p *Player
-}
-
-func (item *playerKickItem) ShouldRelease() bool {
-	return time.Now().Sub(item.p.lastHeartbeatTime()) > playerKickTime
-}
-
-func (item *playerKickItem) Release() {
-	item.p.kick()
-	serverInst.waitToUnload(item.p)
-}
-
-func (b *Server) startPlayerKickTimingWheel() {
-	b.wgAddOne()
-	go b.twPlayerKick.Run(getQuit, func() {
-		log.Println("player kick timingwheel quit")
-		b.wgDone()
-	})
-}
-
-type playerUnloadItem struct {
-	p *Player
-}
-
-func (item *playerUnloadItem) ShouldRelease() bool {
-	if item.p.isOnline() {
-		return false
-	}
-	return time.Now().Sub(item.p.lastHeartbeatTime()) > playerUnloadTime
-}
-
-func (item *playerUnloadItem) Release() {
-	serverInst.removePlayer(item.p)
-	item.p.unload()
-}
-
-func (b *Server) startPlayerUnloadTimingWheel() {
-	b.wgAddOne()
-	go b.twPlayerUnload.Run(getQuit, func() {
-		log.Println("player unload timingwheel quit")
-		b.wgDone()
-	})
 }
