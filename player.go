@@ -302,9 +302,7 @@ func (p *Player) handleMsg(t *time.Timer) {
 }
 
 func (p *Player) sendProto(protoID int16, proto interface{}) {
-	if p.isOnline() {
-		p.sender.addMessage(&message{protoID, proto})
-	}
+	p.sender.addMessage(&message{protoID, proto})
 }
 
 func (p *Player) sendMessageAnyway(msg *message) {
