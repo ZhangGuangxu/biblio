@@ -5,6 +5,7 @@ package protocol
 // require and release proto instances.
 type ProtoFactory interface {
 	Require(protoID int16) (interface{}, error)
+	RequireWithSourceProto(protoID int16, src interface{}) (interface{}, error)
 	Release(protoID int16, x interface{}) error
 }
 
@@ -16,5 +17,6 @@ const (
 
 // S2C protocol
 const (
-	S2CAuthID int16 = 500
+	S2CAuthID  int16 = 500
+	S2CCloseID int16 = 501
 )

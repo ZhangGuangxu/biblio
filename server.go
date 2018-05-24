@@ -16,7 +16,7 @@ var clientWaitAuthMaxTime = 5 * time.Second
 var bindProcessMaxTime = 5 * time.Second // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
 var kickProcessMaxTime = 5 * time.Second // kick player多久后未完成认为处理超时
 var heartbeatTime = 7 * time.Second
-var playerKickTime = 2 * heartbeatTime
+var playerKickTime = 2*heartbeatTime + 1
 var playerUnloadTime = 10 * time.Minute
 
 func init() {
@@ -62,7 +62,7 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.twPlayerKick, err = twmm.NewTimingWheel(playerKickTime, 140)
+	s.twPlayerKick, err = twmm.NewTimingWheel(playerKickTime, 150)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +76,9 @@ func NewServer() (*Server, error) {
 func (b *Server) addPlayer(uid int64, p *Player) {
 	b.muxp.Lock()
 	defer b.muxp.Unlock()
+	if _, ok := b.players[uid]; ok {
+		return
+	}
 	b.players[uid] = p
 }
 

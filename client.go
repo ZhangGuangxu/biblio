@@ -12,10 +12,6 @@ import (
 	"time"
 )
 
-const (
-	maxRoutineCount int32 = 2
-)
-
 var delay = 50 * time.Millisecond
 
 var selfHandleMsgs = map[int16]bool{
@@ -65,7 +61,7 @@ func newClient(c *net.TCPConn) *Client {
 		selfHandleMsgs: ccq.NewCircularQueue(),
 		sender:         newMessageBuffer(),
 		recver:         newMessageBuffer(),
-		routineCnt:     maxRoutineCount,
+		routineCnt:     2,
 		toCloseRead:    make(chan bool, 1),
 		toCloseWrite:   make(chan bool, 1),
 	}
@@ -76,10 +72,6 @@ func newClient(c *net.TCPConn) *Client {
 func (c *Client) Release() {
 	serverInst.removeClient(c)
 	c.close()
-}
-
-func (c *Client) isClosed() bool {
-	return atom.LoadInt32(&c.routineCnt) == 0
 }
 
 func (c *Client) closeRead() {
@@ -96,10 +88,6 @@ func (c *Client) needCloseRead() bool {
 	default:
 		return false
 	}
-}
-
-func (c *Client) delayCloseWrite(d time.Duration) {
-	time.AfterFunc(d, c.closeWrite)
 }
 
 func (c *Client) closeWrite() {
@@ -126,8 +114,13 @@ func (c *Client) needClose() bool {
 	return atom.LoadInt32(&c.toClose) == 1
 }
 
+func (c *Client) isClosed() bool {
+	return atom.LoadInt32(&c.routineCnt) == 0
+}
+
 func (c *Client) handleRead() {
 	defer serverInst.wgDone()
+	defer serverInst.removeClient(c)
 	defer atom.AddInt32(&c.routineCnt, -1)
 	defer c.conn.CloseRead()
 
@@ -142,6 +135,9 @@ func (c *Client) handleRead() {
 			break
 		}
 		if c.needCloseRead() {
+			break
+		}
+		if c.sender.shouldClose() {
 			break
 		}
 
@@ -222,11 +218,12 @@ func (c *Client) handleAuth(msg *message) {
 	auther.delToken(req.UID)
 	serverInst.authReceived(c)
 	if same {
-		// TODO: Send a message to nofity this client that auth succeed.
+		c.recver.addMessage(messageCreater.createS2CAuth(true))
 		serverInst.reqBind(req.UID, c)
 	} else {
-		// TODO: Send a message to nofity this client what is wrong?
-		c.close()
+		c.sender.notifyClose()
+		c.recver.addMessage(messageCreater.createS2CAuth(false))
+		c.recver.notifyClose()
 	}
 }
 
@@ -242,6 +239,7 @@ func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 
 func (c *Client) handleWrite() {
 	defer serverInst.wgDone()
+	defer serverInst.removeClient(c)
 	defer atom.AddInt32(&c.routineCnt, -1)
 	defer c.conn.CloseWrite()
 
@@ -257,25 +255,15 @@ func (c *Client) handleWrite() {
 		if c.needCloseWrite() {
 			break
 		}
+		if c.recver.shouldClose() {
+			c.tryWriteAllLeftData()
+			break
+		}
 
 		c.handleOutgoingMessage(t)
 
 		if c.outgoing.ReadableBytes() > 0 {
-			c.conn.SetWriteDeadline(time.Now().Add(delay))
-			n, err := c.conn.Write(c.outgoing.PeekAllAsByteSlice())
-			c.conn.SetWriteDeadline(time.Time{})
-			if err != nil {
-				if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-					// nothing to do
-				} else {
-					c.close()
-					log.Println(err)
-					return
-				}
-			}
-			if n > 0 {
-				c.outgoing.Retrieve(n)
-			}
+			c.write()
 		}
 	}
 }
@@ -297,5 +285,40 @@ func (c *Client) handleOutgoingMessage(timer *time.Timer) {
 		c.outgoing.AppendInt32(int32(2 + len(data)))
 		c.outgoing.AppendInt16(msg.protoID)
 		c.outgoing.Append(data)
+	}
+}
+
+func (c *Client) tryWriteAllLeftData() {
+	t := time.NewTimer(delay)
+	c.handleOutgoingMessage(t)
+
+	timer := time.NewTimer(heartbeatTime)
+
+	for c.outgoing.ReadableBytes() > 0 {
+		select {
+		case <-timer.C:
+			return
+		default:
+		}
+
+		c.write()
+	}
+}
+
+func (c *Client) write() {
+	c.conn.SetWriteDeadline(time.Now().Add(delay))
+	n, err := c.conn.Write(c.outgoing.PeekAllAsByteSlice())
+	c.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
+			// nothing to do
+		} else {
+			c.close()
+			log.Println(err)
+			return
+		}
+	}
+	if n > 0 {
+		c.outgoing.Retrieve(n)
 	}
 }

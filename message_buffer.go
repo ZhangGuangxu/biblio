@@ -13,7 +13,7 @@ type messageBuffer struct {
 	qTake *ccq.CircularQueue
 
 	newMsgAdded chan bool
-	outCh       chan *message
+	closeFlag   chan bool
 }
 
 // @public
@@ -22,7 +22,25 @@ func newMessageBuffer() *messageBuffer {
 		qAdd:        ccq.NewCircularQueue(),
 		qTake:       ccq.NewCircularQueue(),
 		newMsgAdded: make(chan bool, 1),
-		outCh:       make(chan *message),
+		closeFlag:   make(chan bool, 1),
+	}
+}
+
+// @public
+func (s *messageBuffer) notifyClose() {
+	select {
+	case s.closeFlag <- true:
+	default:
+	}
+}
+
+// @public
+func (s *messageBuffer) shouldClose() bool {
+	select {
+	case <-s.closeFlag:
+		return true
+	default:
+		return false
 	}
 }
 

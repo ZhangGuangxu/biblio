@@ -2,6 +2,7 @@ package main
 
 import (
 	proto "biblio/protocol"
+	"biblio/util"
 	"errors"
 	atom "sync/atomic"
 	"time"
@@ -140,14 +141,13 @@ func (p *Player) bind(req *bindReqToPlayer) {
 	}
 
 	if succ {
-		// TODO: 通过sender向客户端发送一个通知
-		// p.client.closeRead()
-		// // TODO: 发送一个proto，通知玩家“账号在其它客户端登录，当前客户端被迫下线”
-		// p.client.delayCloseWrite(delay)
-
-		// TODO:
-		// 通知p.recver停止接收
-		// 通知p.sender停止发送，但是可能单独发送一个通知
+		if p.recver != nil {
+			p.recver.notifyClose()
+		}
+		p.sendMessageAnyway(messageCreater.createS2CClose(util.AnotherClientConnected))
+		if p.sender != nil {
+			p.sender.notifyClose()
+		}
 
 		p.recver = req.recverForPlayer
 		p.sender = req.senderForPlayer
@@ -184,14 +184,13 @@ func (p *Player) unbind() {
 	}
 
 	if succ {
-		// TODO: 通过sender向客户端发送一个通知
-		// p.client.closeRead()
-		// // TODO: 发送一个proto，通知玩家“账号在其它客户端登录，当前客户端被迫下线”
-		// p.client.delayCloseWrite(delay)
-
-		// TODO:
-		// 通知p.recver停止接收
-		// 通知p.sender停止发送，但是可能单独发送一个通知
+		if p.recver != nil {
+			p.recver.notifyClose()
+		}
+		p.sendMessageAnyway(messageCreater.createS2CClose(util.HeartbeatTimeout))
+		if p.sender != nil {
+			p.sender.notifyClose()
+		}
 
 		p.recver = nil
 		p.sender = nil
@@ -305,6 +304,12 @@ func (p *Player) handleMsg(t *time.Timer) {
 func (p *Player) sendProto(protoID int16, proto interface{}) {
 	if p.isOnline() {
 		p.sender.addMessage(&message{protoID, proto})
+	}
+}
+
+func (p *Player) sendMessageAnyway(msg *message) {
+	if p.sender != nil {
+		p.sender.addMessage(msg)
 	}
 }
 
