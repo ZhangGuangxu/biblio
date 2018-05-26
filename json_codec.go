@@ -51,8 +51,11 @@ func (c *jsonCodec) Decode(protoID int16, data []byte) (interface{}, error) {
 		return nil, err
 	}
 
-	err = json.Unmarshal(data, proto)
-	return proto, err
+	if err = json.Unmarshal(data, proto); err != nil {
+		return nil, err
+	}
+
+	return proto, nil
 }
 
 func (c *jsonCodec) Encode(proto interface{}) ([]byte, error) {

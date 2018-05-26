@@ -12,9 +12,9 @@ var maxConnectionCount int
 var serverAddress string // "ip:port", for example: "127.0.0.1:10001", or ":10001"
 var messageCodec Codec
 
-var clientWaitAuthMaxTime = 5 * time.Second
-var bindProcessMaxTime = 5 * time.Second // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
-var kickProcessMaxTime = 5 * time.Second // kick player多久后未完成认为处理超时
+var clientWaitAuthMaxTime = 5 * time.Second // 等待接收客户端的auth消息的最大时长
+var bindProcessMaxTime = 5 * time.Second    // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
+var kickProcessMaxTime = 5 * time.Second    // kick player多久后未完成认为处理超时
 var heartbeatTime = 7 * time.Second
 var playerKickTime = 2*heartbeatTime + 1
 var playerUnloadTime = 10 * time.Minute
@@ -36,7 +36,14 @@ type Server struct {
 	muxc    sync.Mutex
 	clients map[*Client]bool
 
-	twClient *twmm.TimingWheel // 用于等待客户端发送auth消息超时
+	twClient        *twmm.TimingWheel // 用于处理“auth消息在指定超时时间前未收到”
+	twClientBinding *twmm.TimingWheel // 用于处理“client bind到player的过程超时的情况”
+	// 用于处理指定时间内未收到客户端消息的情况。
+	// 主要考虑到player的逻辑处理协程可能发生死循环，同时player处于binding/kicking的状态。
+	// 处于死循环，就无法回收player了。而且把player保持在Server.players中会比较稳妥。
+	// player的binding/kicking是中间状态，就没有设置处理unload的timingwheel。
+	// 这时只能尝试回收client，作为补救措施。
+	twClientBinded *twmm.TimingWheel
 
 	muxx      sync.Mutex
 	xBindReqs map[int64]interface{}
@@ -50,8 +57,8 @@ type Server struct {
 // You MUST use this function to create a server instance.
 func NewServer() (*Server, error) {
 	s := &Server{
-		players:        make(map[int64]*Player, 1000),
-		clients:        make(map[*Client]bool, maxConnectionCount/10),
+		players:        make(map[int64]*Player, 100),
+		clients:        make(map[*Client]bool, 100),
 		xBindReqs:      make(map[int64]interface{}, 100),
 		newXBindReqAdd: make(chan bool, 1),
 		wg:             &sync.WaitGroup{},
@@ -62,6 +69,15 @@ func NewServer() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.twClientBinding, err = twmm.NewTimingWheel(bindProcessMaxTime*2, 100)
+	if err != nil {
+		return nil, err
+	}
+	s.twClientBinded, err = twmm.NewTimingWheel(playerKickTime*2, 300)
+	if err != nil {
+		return nil, err
+	}
+
 	s.twPlayerKick, err = twmm.NewTimingWheel(playerKickTime, 150)
 	if err != nil {
 		return nil, err
@@ -82,12 +98,20 @@ func (b *Server) addPlayer(uid int64, p *Player) {
 	b.players[uid] = p
 }
 
-func (b *Server) addPlayerToKick(p *Player) {
-	b.twPlayerKick.AddItem(&playerKickItem{p})
+func (b *Server) addPlayerToKick(item *playerKickItem) {
+	b.twPlayerKick.AddItem(item)
 }
 
-func (b *Server) waitToUnload(p *Player) {
-	b.twPlayerUnload.AddItem(&playerUnloadItem{p})
+func (b *Server) stopKick(item *playerKickItem) {
+	b.twPlayerKick.DelItem(item)
+}
+
+func (b *Server) waitToUnload(item *playerUnloadItem) {
+	b.twPlayerUnload.AddItem(item)
+}
+
+func (b *Server) stopUnload(item *playerUnloadItem) {
+	b.twPlayerUnload.DelItem(item)
 }
 
 func (b *Server) removePlayer(p *Player) {
@@ -98,14 +122,32 @@ func (b *Server) removePlayer(p *Player) {
 
 func (b *Server) addClient(c *Client) {
 	b.muxc.Lock()
+	defer b.muxc.Unlock()
 	b.clients[c] = true
-	b.muxc.Unlock()
-
-	b.twClient.AddItem(c)
 }
 
-func (b *Server) authReceived(c *Client) {
-	b.twClient.DelItem(c)
+func (b *Server) waitAuth(item *clientAuthTimeoutItem) {
+	b.twClient.AddItem(item)
+}
+
+func (b *Server) stopWaitAuth(item *clientAuthTimeoutItem) {
+	b.twClient.DelItem(item)
+}
+
+func (b *Server) waitClientBinding(item *clientBindingTimeoutItem) {
+	b.twClientBinding.AddItem(item)
+}
+
+func (b *Server) stopWaitClientBinding(item *clientBindingTimeoutItem) {
+	b.twClientBinding.DelItem(item)
+}
+
+func (b *Server) waitClientTimeout(item *clientBindedTimeoutItem) {
+	b.twClientBinded.AddItem(item)
+}
+
+func (b *Server) stopWaitClientTimeout(item *clientBindedTimeoutItem) {
+	b.twClientBinded.DelItem(item)
 }
 
 func (b *Server) removeClient(c *Client) {
@@ -120,8 +162,13 @@ func (b *Server) clientCount() int {
 	return len(b.clients)
 }
 
-func (b *Server) run(rwg *sync.WaitGroup) {
-	defer rwg.Done()
+func (b *Server) start(wg *sync.WaitGroup) {
+	wg.Add(1)
+	go b.run(wg)
+}
+
+func (b *Server) run(wg *sync.WaitGroup) {
+	defer wg.Done()
 	defer log.Println("Server.run() quit")
 
 	tcpaddr, err := net.ResolveTCPAddr("tcp4", serverAddress)
@@ -153,6 +200,9 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 	b.startDoBind()
 
 	b.startClientTimingWheel()
+	b.startClientBindingTimingWheel()
+	b.startClientBindedTimingWheel()
+
 	b.startPlayerKickTimingWheel()
 	b.startPlayerUnloadTimingWheel()
 
@@ -168,7 +218,8 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 					break
 				} else {
 					log.Println(err)
-					continue
+					setQuit()
+					break
 				}
 			}
 
@@ -187,7 +238,7 @@ func (b *Server) run(rwg *sync.WaitGroup) {
 
 	auther.startTimingWheel()
 
-	// TODO: 为web server提供服务
+	// TODO: 监听web-server的请求
 
 	b.wg.Wait()
 }

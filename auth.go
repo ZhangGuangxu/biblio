@@ -21,7 +21,8 @@ func (item authItem) Release() {
 type auth struct {
 	mux    sync.Mutex
 	tokens map[int64]string
-	tw     *twmm.TimingWheel
+
+	tw *twmm.TimingWheel
 }
 
 func newAuth() (*auth, error) {
@@ -34,7 +35,7 @@ func newAuth() (*auth, error) {
 }
 
 // @public
-func (a *auth) putToken(uid int64, token string) {
+func (a *auth) addToken(uid int64, token string) {
 	a.tw.AddItem(authItem(uid))
 
 	a.mux.Lock()
@@ -43,14 +44,14 @@ func (a *auth) putToken(uid int64, token string) {
 }
 
 // @public
-func (a *auth) compareToken(uid int64, token string) (bool, error) {
+func (a *auth) checkToken(uid int64, token string) (bool, error) {
 	a.mux.Lock()
 	t, ok := a.tokens[uid]
 	a.mux.Unlock()
-	if !ok {
-		return false, errNoToken
+	if ok {
+		return t == token, nil
 	}
-	return t == token, nil
+	return false, errNoToken
 }
 
 // @public

@@ -4,10 +4,51 @@ import (
 	"log"
 )
 
+// 用于处理“auth消息在指定超时时间前未收到”
+type clientAuthTimeoutItem struct {
+	c *Client
+}
+
+func (item *clientAuthTimeoutItem) Release() {
+	item.c.onTimeout()
+}
+
 func (b *Server) startClientTimingWheel() {
 	b.wgAddOne()
 	go b.twClient.Run(getQuit, func() {
 		log.Println("client timingwheel quit")
+		b.wgDone()
+	})
+}
+
+type clientBindingTimeoutItem struct {
+	c *Client
+}
+
+func (item *clientBindingTimeoutItem) Release() {
+	item.c.onTimeout()
+}
+
+func (b *Server) startClientBindingTimingWheel() {
+	b.wgAddOne()
+	go b.twClientBinding.Run(getQuit, func() {
+		log.Println("client binding timingwheel quit")
+		b.wgDone()
+	})
+}
+
+type clientBindedTimeoutItem struct {
+	c *Client
+}
+
+func (item *clientBindedTimeoutItem) Release() {
+	item.c.onTimeout()
+}
+
+func (b *Server) startClientBindedTimingWheel() {
+	b.wgAddOne()
+	go b.twClientBinded.Run(getQuit, func() {
+		log.Println("client binded timingwheel quit")
 		b.wgDone()
 	})
 }
@@ -17,8 +58,7 @@ type playerKickItem struct {
 }
 
 func (item *playerKickItem) Release() {
-	serverInst.kickPlayer(item.p.uid())
-	serverInst.waitToUnload(item.p)
+	item.p.onKick()
 }
 
 func (b *Server) startPlayerKickTimingWheel() {
@@ -34,11 +74,7 @@ type playerUnloadItem struct {
 }
 
 func (item *playerUnloadItem) Release() {
-	if item.p.isOnline() {
-		return
-	}
-	serverInst.removePlayer(item.p)
-	item.p.unload()
+	item.p.onUnload()
 }
 
 func (b *Server) startPlayerUnloadTimingWheel() {

@@ -3,16 +3,19 @@ package main
 import (
 	proto "biblio/protocol"
 	protojson "biblio/protocol/json"
+	"errors"
 	ccq "github.com/ZhangGuangxu/circularqueue"
 	"github.com/ZhangGuangxu/netbuffer"
 	"io"
 	"log"
 	"net"
+	"sync"
 	atom "sync/atomic"
 	"time"
 )
 
 var delay = 50 * time.Millisecond
+var writeAllLeftDataMaxTime = 5 * time.Second
 
 var selfHandleMsgs = map[int16]bool{
 	proto.C2SAuthID: true,
@@ -37,9 +40,13 @@ func dispatchMessageToClient(c *Client, msg *message) {
 
 // Client wraps communication with tcp client.
 type Client struct {
-	conn     *net.TCPConn
-	incoming *netbuffer.Buffer // 接收客户端数据的缓冲区
-	outgoing *netbuffer.Buffer // 向客户端发送数据的缓冲区
+	muxState sync.Mutex
+	state    clientState
+
+	conn *net.TCPConn
+
+	incoming *netbuffer.Buffer // 接收网络数据的缓冲区
+	outgoing *netbuffer.Buffer // 将要发送的网络数据的缓冲区
 
 	// Client自己处理的消息
 	selfHandleMsgs *ccq.CircularQueue
@@ -47,10 +54,8 @@ type Client struct {
 	sender *messageBuffer // add message to sender
 	recver *messageBuffer // take message from recver
 
-	routineCnt   int32
-	toClose      int32
-	toCloseRead  chan bool
-	toCloseWrite chan bool
+	routineCnt int32
+	toClose    int32
 }
 
 func newClient(c *net.TCPConn) *Client {
@@ -62,48 +67,41 @@ func newClient(c *net.TCPConn) *Client {
 		sender:         newMessageBuffer(),
 		recver:         newMessageBuffer(),
 		routineCnt:     2,
-		toCloseRead:    make(chan bool, 1),
-		toCloseWrite:   make(chan bool, 1),
 	}
+	client.state = newClientStateNotbinded(client)
 	return client
 }
 
-// Release releases this client.
-func (c *Client) Release() {
-	serverInst.removeClient(c)
-	c.close()
+func (c *Client) setState(s clientState) {
+	c.state = s
 }
 
-func (c *Client) closeRead() {
-	select {
-	case c.toCloseRead <- true:
-	default:
-	}
+// @public
+func (c *Client) onBind() {
+	c.muxState.Lock()
+	defer c.muxState.Unlock()
+	c.state.onBind()
 }
 
-func (c *Client) needCloseRead() bool {
-	select {
-	case <-c.toCloseRead:
-		return true
-	default:
-		return false
-	}
+// @public
+func (c *Client) onBindSuccess() {
+	c.muxState.Lock()
+	defer c.muxState.Unlock()
+	c.state.onBindSuccess()
 }
 
-func (c *Client) closeWrite() {
-	select {
-	case c.toCloseWrite <- true:
-	default:
-	}
+// @public
+func (c *Client) onTimeout() {
+	c.muxState.Lock()
+	defer c.muxState.Unlock()
+	c.state.onTimeout()
 }
 
-func (c *Client) needCloseWrite() bool {
-	select {
-	case <-c.toCloseWrite:
-		return true
-	default:
-		return false
-	}
+// @public
+func (c *Client) onNewMessageToPlayer() {
+	c.muxState.Lock()
+	defer c.muxState.Unlock()
+	c.state.onNewMessageToPlayer()
 }
 
 func (c *Client) close() {
@@ -132,9 +130,6 @@ func (c *Client) handleRead() {
 			break
 		}
 		if c.needClose() {
-			break
-		}
-		if c.needCloseRead() {
 			break
 		}
 		if c.sender.shouldClose() {
@@ -168,38 +163,42 @@ func (c *Client) handleRead() {
 			if useTmpBuf {
 				c.incoming.Append(buf)
 			}
-			err := messageCodec.OnData(c.incoming, c)
-			if err != nil {
+			if err := messageCodec.OnData(c.incoming, c); err != nil {
 				c.close()
 				log.Println(err)
 				break
 			}
-			c.handleMsgs()
+			if err := c.handleMsgs(); err != nil {
+				break
+			}
 		}
 		if eof {
 			c.close()
-			log.Println("EOF")
+			//log.Println("EOF")
 			break
 		}
 	}
 }
 
-func (c *Client) handleMsgs() {
+var errInvalideMessage = errors.New("invalid message")
+
+func (c *Client) handleMsgs() error {
 	for !c.selfHandleMsgs.IsEmpty() {
 		m, err := c.selfHandleMsgs.Pop()
 		if err != nil {
 			c.close()
-			break
+			return err
 		}
 
 		v, ok := m.(*message)
 		if !ok {
 			c.close()
-			break
+			return errInvalideMessage
 		}
 
 		dispatchMessageToClient(c, v)
 	}
+	return nil
 }
 
 func (c *Client) handleAuth(msg *message) {
@@ -209,14 +208,14 @@ func (c *Client) handleAuth(msg *message) {
 		return
 	}
 
-	same, err := auther.compareToken(req.UID, req.Token)
+	same, err := auther.checkToken(req.UID, req.Token)
 	if err != nil {
 		c.close()
 		return
 	}
 
 	auther.delToken(req.UID)
-	serverInst.authReceived(c)
+	c.onBind()
 	if same {
 		c.recver.addMessage(messageCreater.createS2CAuth(true))
 		serverInst.reqBind(req.UID, c)
@@ -234,6 +233,7 @@ func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 		return
 	}
 
+	c.onNewMessageToPlayer()
 	c.sender.addMessage(msg)
 }
 
@@ -242,6 +242,7 @@ func (c *Client) handleWrite() {
 	defer serverInst.removeClient(c)
 	defer atom.AddInt32(&c.routineCnt, -1)
 	defer c.conn.CloseWrite()
+	defer c.recver.notifyClientWriteClosed()
 
 	t := time.NewTimer(delay)
 
@@ -252,23 +253,28 @@ func (c *Client) handleWrite() {
 		if c.needClose() {
 			break
 		}
-		if c.needCloseWrite() {
-			break
-		}
 		if c.recver.shouldClose() {
 			c.tryWriteAllLeftData()
 			break
 		}
 
-		c.handleOutgoingMessage(t)
+		if c.recver.isBindSuccess() {
+			c.onBindSuccess()
+		}
+
+		if err := c.handleOutgoingMessage(t); err != nil {
+			break
+		}
 
 		if c.outgoing.ReadableBytes() > 0 {
-			c.write()
+			if err := c.write(); err != nil {
+				break
+			}
 		}
 	}
 }
 
-func (c *Client) handleOutgoingMessage(timer *time.Timer) {
+func (c *Client) handleOutgoingMessage(timer *time.Timer) error {
 	for {
 		msg := c.recver.takeMessage(timer)
 		if msg == nil {
@@ -276,36 +282,48 @@ func (c *Client) handleOutgoingMessage(timer *time.Timer) {
 		}
 
 		data, err := messageCodec.Encode(msg.proto)
-		messageCodec.Release(msg.protoID, msg.proto)
 		if err != nil {
 			c.close()
-			break
+			return err
+		}
+		err = messageCodec.Release(msg.protoID, msg.proto)
+		if err != nil {
+			c.close()
+			return err
 		}
 
 		c.outgoing.AppendInt32(int32(2 + len(data)))
 		c.outgoing.AppendInt16(msg.protoID)
 		c.outgoing.Append(data)
 	}
+
+	return nil
 }
 
-func (c *Client) tryWriteAllLeftData() {
+func (c *Client) tryWriteAllLeftData() error {
 	t := time.NewTimer(delay)
-	c.handleOutgoingMessage(t)
+	if err := c.handleOutgoingMessage(t); err != nil {
+		return err
+	}
 
-	timer := time.NewTimer(heartbeatTime)
+	timer := time.NewTimer(writeAllLeftDataMaxTime)
 
 	for c.outgoing.ReadableBytes() > 0 {
 		select {
 		case <-timer.C:
-			return
+			return nil
 		default:
 		}
 
-		c.write()
+		if err := c.write(); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
-func (c *Client) write() {
+func (c *Client) write() error {
 	c.conn.SetWriteDeadline(time.Now().Add(delay))
 	n, err := c.conn.Write(c.outgoing.PeekAllAsByteSlice())
 	c.conn.SetWriteDeadline(time.Time{})
@@ -315,10 +333,11 @@ func (c *Client) write() {
 		} else {
 			c.close()
 			log.Println(err)
-			return
+			return err
 		}
 	}
 	if n > 0 {
 		c.outgoing.Retrieve(n)
 	}
+	return nil
 }

@@ -46,7 +46,6 @@ func newUnbindReq(uid int64) *unbindReq {
 }
 
 func (b *Server) reqBind(uid int64, c *Client) {
-
 	if b.doReqBind(uid, c) {
 		b.setNewXBindReqAdded()
 	}

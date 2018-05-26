@@ -4,6 +4,7 @@ import (
 	proto "biblio/protocol"
 	"biblio/util"
 	"errors"
+	"sync"
 	atom "sync/atomic"
 	"time"
 )
@@ -25,6 +26,9 @@ func dispatchMessageToPlayer(player *Player, msg *message) {
 
 // Player wraps a game player. Zero value is invalid.
 type Player struct {
+	muxState sync.Mutex
+	state    playerState
+
 	bindReqs   chan *bindReqToPlayer
 	unbindReqs chan bool
 
@@ -52,10 +56,63 @@ func newPlayer(r *messageBuffer, s *messageBuffer) *Player {
 		unloadFlag:     make(chan bool),
 		playerBaseData: &PlayerBaseData{},
 	}
-
+	p.state = newPlayerStateOffline(p)
 	p.playerBaseModule = newPlayerBaseModule(p)
 	p.playerHeartbeatModule = newPlayerHeartbeatModule(p)
 	return p
+}
+
+func (p *Player) setState(s playerState) {
+	p.state = s
+}
+
+// @public
+func (p *Player) onBind() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onBind()
+}
+
+// @public
+func (p *Player) onBindSuccess() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onBindSuccess()
+}
+
+// @public
+func (p *Player) onKick() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onKick()
+}
+
+// @public
+func (p *Player) onKickSuccess() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onKickSuccess()
+}
+
+// @public
+func (p *Player) onUnload() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onUnload()
+}
+
+// @public
+func (p *Player) isOnline() bool {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	return p.state.isOnline()
+}
+
+// @public
+func (p *Player) onHeartbeat() {
+	p.muxState.Lock()
+	defer p.muxState.Unlock()
+	p.state.onHeartbeat()
 }
 
 func (p *Player) reqBind(req *bindReqToPlayer) bool {
@@ -108,26 +165,55 @@ func (p *Player) doBind() {
 }
 
 func (p *Player) bind(req *bindReqToPlayer) {
+	p.onBind()
 	p.setToStop(true)
 
-	d := time.Millisecond
-	maxT := req.endTime.Sub(time.Now())
-	var loopCnt int
-	if maxT > 0 {
-		loopCnt = int(maxT) / int(d)
-	}
-	var t *time.Ticker
-	if loopCnt > 0 {
-		t = time.NewTicker(d)
-	}
+	// d := time.Millisecond
+	// maxT := req.endTime.Sub(time.Now())
+	// var loopCnt int
+	// if maxT > 0 {
+	// 	loopCnt = int(maxT) / int(d)
+	// }
+	// var t *time.Ticker
+	// if loopCnt > 0 {
+	// 	t = time.NewTicker(d)
+	// }
+	// var succ bool
+
+	// for i := 0; i < loopCnt; i++ {
+	// 	if needQuit() {
+	// 		break
+	// 	}
+	// 	if p.needUnload() {
+	// 		break
+	// 	}
+
+	// 	if !p.isRunning() {
+	// 		succ = true
+	// 		break
+	// 	}
+
+	// 	select {
+	// 	case <-t.C:
+	// 	}
+	// }
+
 	var succ bool
 
-	for i := 0; i < loopCnt; i++ {
+	d1 := 1 * time.Millisecond
+	t1 := time.NewTimer(d1)
+	d := d1
+	d3 := 50 * time.Millisecond
+
+	d2 := 5 * time.Second
+	t2 := time.NewTimer(d2)
+
+	for {
 		if needQuit() {
-			return
+			break
 		}
 		if p.needUnload() {
-			return
+			break
 		}
 
 		if !p.isRunning() {
@@ -135,8 +221,11 @@ func (p *Player) bind(req *bindReqToPlayer) {
 			break
 		}
 
+		t1.Reset(d)
 		select {
-		case <-t.C:
+		case <-t1.C:
+		case <-t2.C:
+			d = d3
 		}
 	}
 
@@ -153,24 +242,58 @@ func (p *Player) bind(req *bindReqToPlayer) {
 		p.sender = req.senderForPlayer
 		p.setToStop(false)
 		p.start()
+		p.onBindSuccess()
 	}
 }
 
+func (p *Player) notifyBindSuccess() {
+	p.sender.notifyBindSuccess()
+}
+
 func (p *Player) unbind() {
+	p.onKick()
 	p.setToStop(true)
 
-	d := time.Millisecond
-	maxT := 5 * time.Second
-	loopCnt := int(maxT / d)
-	t := time.NewTicker(d)
+	// d := time.Millisecond
+	// maxT := 5 * time.Second
+	// loopCnt := int(maxT / d)
+	// t := time.NewTicker(d)
+	// var succ bool
+
+	// for i := 0; i < loopCnt; i++ {
+	// 	if needQuit() {
+	// 		break
+	// 	}
+	// 	if p.needUnload() {
+	// 		break
+	// 	}
+
+	// 	if !p.isRunning() {
+	// 		succ = true
+	// 		break
+	// 	}
+
+	// 	select {
+	// 	case <-t.C:
+	// 	}
+	// }
+
 	var succ bool
 
-	for i := 0; i < loopCnt; i++ {
+	d1 := 1 * time.Millisecond
+	t1 := time.NewTimer(d1)
+	d := d1
+	d3 := 50 * time.Millisecond
+
+	d2 := 5 * time.Second
+	t2 := time.NewTimer(d2)
+
+	for {
 		if needQuit() {
-			return
+			break
 		}
 		if p.needUnload() {
-			return
+			break
 		}
 
 		if !p.isRunning() {
@@ -178,8 +301,11 @@ func (p *Player) unbind() {
 			break
 		}
 
+		t1.Reset(d)
 		select {
-		case <-t.C:
+		case <-t1.C:
+		case <-t2.C:
+			d = d3
 		}
 	}
 
@@ -195,6 +321,7 @@ func (p *Player) unbind() {
 		p.recver = nil
 		p.sender = nil
 		p.setToStop(false)
+		p.onKickSuccess()
 	}
 }
 
@@ -222,12 +349,7 @@ func (p *Player) isRunning() bool {
 	return atom.LoadInt32(&p.running) == 1
 }
 
-func (p *Player) isOnline() bool {
-	return p.isRunning()
-}
-
-// make sure this function just get invoked once.
-func (p *Player) unload() {
+func (p *Player) notifyUnload() {
 	if atom.CompareAndSwapInt32(&p.unloadFlagGuard, 0, 1) {
 		close(p.unloadFlag)
 	}
@@ -235,21 +357,15 @@ func (p *Player) unload() {
 
 func (p *Player) needUnload() bool {
 	select {
-	case _, ok := <-p.unloadFlag:
-		if !ok {
-			return true
-		}
+	case <-p.unloadFlag:
+		return true
 	default:
 		return false
 	}
-
-	return false
 }
 
 func (p *Player) start() {
 	p.setRunning(true)
-	p.playerHeartbeatModule.setLastTime(time.Now())
-	serverInst.addPlayerToKick(p)
 	serverInst.wgAddOne()
 	go p.run()
 }
@@ -313,8 +429,4 @@ func (p *Player) sendMessageAnyway(msg *message) {
 
 func (p *Player) uid() int64 {
 	return p.playerBaseData.uid
-}
-
-func (p *Player) lastHeartbeatTime() time.Time {
-	return p.playerHeartbeatModule.getLastTime()
 }
