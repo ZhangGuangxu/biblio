@@ -51,8 +51,8 @@ type Client struct {
 	// Client自己处理的消息
 	selfHandleMsgs *ccq.CircularQueue
 
-	sender *messageBuffer // add message to sender
-	recver *messageBuffer // take message from recver
+	sender messageMediator // 'handleRead' goroutine adds message to sender
+	recver messageMediator // 'handleWrite' goroutine takes message from recver
 
 	routineCnt int32
 	toClose    int32
@@ -64,11 +64,15 @@ func newClient(c *net.TCPConn) *Client {
 		incoming:       netbuffer.NewBuffer(),
 		outgoing:       netbuffer.NewBuffer(),
 		selfHandleMsgs: ccq.NewCircularQueue(),
-		sender:         newMessageBuffer(),
-		recver:         newMessageBuffer(),
+		sender:         newMessageChannel(),
+		recver:         newMessageChannel(),
 		routineCnt:     2,
 	}
 	client.state = newClientStateNotbinded(client)
+	client.sender.start()
+	client.recver.start()
+	client.startRead()
+	client.startWrite()
 	return client
 }
 
@@ -116,11 +120,17 @@ func (c *Client) isClosed() bool {
 	return atom.LoadInt32(&c.routineCnt) == 0
 }
 
+func (c *Client) startRead() {
+	serverInst.wgAddOne()
+	go c.handleRead()
+}
+
 func (c *Client) handleRead() {
 	defer serverInst.wgDone()
 	defer serverInst.removeClient(c)
 	defer atom.AddInt32(&c.routineCnt, -1)
 	defer c.conn.CloseRead()
+	defer c.sender.notifyClientReadClosed()
 
 	tmpBuf := make([]byte, maxDataLen)
 	var eof bool
@@ -235,6 +245,11 @@ func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 
 	c.onNewMessageToPlayer()
 	c.sender.addMessage(msg)
+}
+
+func (c *Client) startWrite() {
+	serverInst.wgAddOne()
+	go c.handleWrite()
 }
 
 func (c *Client) handleWrite() {

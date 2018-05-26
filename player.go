@@ -32,8 +32,8 @@ type Player struct {
 	bindReqs   chan *bindReqToPlayer
 	unbindReqs chan bool
 
-	recver *messageBuffer // take message from recver
-	sender *messageBuffer // add message to sender
+	recver messageMediator // take message from recver
+	sender messageMediator // add message to sender
 
 	toStop  int32
 	running int32
@@ -47,7 +47,7 @@ type Player struct {
 	playerHeartbeatModule *PlayerHeartbeatModule
 }
 
-func newPlayer(r *messageBuffer, s *messageBuffer) *Player {
+func newPlayer(r messageMediator, s messageMediator) *Player {
 	p := &Player{
 		bindReqs:       make(chan *bindReqToPlayer),
 		unbindReqs:     make(chan bool),
@@ -376,6 +376,10 @@ func (p *Player) run() {
 		p.setRunning(false)
 	}()
 
+	p.handleMsg()
+}
+
+func (p *Player) handleMsg() {
 	delay := 50 * time.Millisecond
 	t := time.NewTimer(delay)
 
@@ -391,29 +395,15 @@ func (p *Player) run() {
 		}
 
 		t.Reset(delay)
-		p.handleMsg(t)
-	}
-}
-
-func (p *Player) handleMsg(t *time.Timer) {
-	for {
-		if needQuit() {
-			break
-		}
-		if p.needUnload() {
-			break
-		}
-		if p.needStop() {
-			break
-		}
-
 		msg := p.recver.takeMessage(t)
 		if msg == nil {
-			break
+			continue
 		}
 
 		dispatchMessageToPlayer(p, msg)
-		messageCodec.Release(msg.protoID, msg.proto)
+		if err := messageCodec.Release(msg.protoID, msg.proto); err != nil {
+			break
+		}
 	}
 }
 

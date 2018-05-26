@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Zero value of messageBuffer is invalid.
-type messageBuffer struct {
+// Zero value of messageQueue is invalid.
+type messageQueue struct {
 	mux   sync.Mutex
 	qAdd  *ccq.CircularQueue
 	qTake *ccq.CircularQueue
@@ -19,24 +19,27 @@ type messageBuffer struct {
 	bindSuccessGuard int32
 	bindSuccess      chan bool
 
-	// Client对象的handleWrite协程已终止
+	// 用于标识Client对象的handleWrite协程已终止
 	clientWriteClosed chan bool
+	// 用于标识Client对象的handleRead协程已终止
+	clientReadClosed chan bool
 }
 
 // @public
-func newMessageBuffer() *messageBuffer {
-	return &messageBuffer{
+func newMessageQueue() *messageQueue {
+	return &messageQueue{
 		qAdd:              ccq.NewCircularQueue(),
 		qTake:             ccq.NewCircularQueue(),
 		newMsgAdded:       make(chan bool, 1),
 		closeFlag:         make(chan bool, 1),
 		bindSuccess:       make(chan bool),
 		clientWriteClosed: make(chan bool),
+		clientReadClosed:  make(chan bool),
 	}
 }
 
 // @public
-func (s *messageBuffer) notifyClose() {
+func (s *messageQueue) notifyClose() {
 	select {
 	case s.closeFlag <- true:
 	default:
@@ -44,7 +47,7 @@ func (s *messageBuffer) notifyClose() {
 }
 
 // @public
-func (s *messageBuffer) shouldClose() bool {
+func (s *messageQueue) shouldClose() bool {
 	select {
 	case <-s.closeFlag:
 		return true
@@ -54,14 +57,14 @@ func (s *messageBuffer) shouldClose() bool {
 }
 
 // @public
-func (s *messageBuffer) notifyBindSuccess() {
+func (s *messageQueue) notifyBindSuccess() {
 	if atom.CompareAndSwapInt32(&s.bindSuccessGuard, 0, 1) {
 		close(s.bindSuccess)
 	}
 }
 
 // @public
-func (s *messageBuffer) isBindSuccess() bool {
+func (s *messageQueue) isBindSuccess() bool {
 	select {
 	case <-s.bindSuccess:
 		return true
@@ -71,12 +74,11 @@ func (s *messageBuffer) isBindSuccess() bool {
 }
 
 // @public
-func (s *messageBuffer) notifyClientWriteClosed() {
+func (s *messageQueue) notifyClientWriteClosed() {
 	close(s.clientWriteClosed)
 }
 
-// @public
-func (s *messageBuffer) isClientWriteClosed() bool {
+func (s *messageQueue) isClientWriteClosed() bool {
 	select {
 	case <-s.clientWriteClosed:
 		return true
@@ -86,7 +88,21 @@ func (s *messageBuffer) isClientWriteClosed() bool {
 }
 
 // @public
-func (s *messageBuffer) addMessage(msg *message) {
+func (s *messageQueue) notifyClientReadClosed() {
+	close(s.clientReadClosed)
+}
+
+func (s *messageQueue) isClientReadClosed() bool {
+	select {
+	case <-s.clientReadClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+// @public
+func (s *messageQueue) addMessage(msg *message) {
 	if s.isClientWriteClosed() { // 消息已无法发出了，所以直接丢弃
 		return
 	}
@@ -98,14 +114,14 @@ func (s *messageBuffer) addMessage(msg *message) {
 	s.newMessageAdded()
 }
 
-func (s *messageBuffer) newMessageAdded() {
+func (s *messageQueue) newMessageAdded() {
 	select {
 	case s.newMsgAdded <- true:
 	default:
 	}
 }
 
-func (s *messageBuffer) hasNewMessage(timer *time.Timer) bool {
+func (s *messageQueue) hasNewMessage(timer *time.Timer) bool {
 	if timer != nil {
 		select {
 		case <-s.newMsgAdded:
@@ -126,7 +142,7 @@ func (s *messageBuffer) hasNewMessage(timer *time.Timer) bool {
 // @public
 // takeMessage takes message from sender. It may return nil.
 // timer is a timer to wait for messages. It could be nil.
-func (s *messageBuffer) takeMessage(timer *time.Timer) *message {
+func (s *messageQueue) takeMessage(timer *time.Timer) *message {
 	if s.qTake.IsEmpty() {
 		if s.hasNewMessage(timer) {
 			s.mux.Lock()
@@ -147,3 +163,5 @@ func (s *messageBuffer) takeMessage(timer *time.Timer) *message {
 
 	return nil
 }
+
+func (s *messageQueue) start() {}

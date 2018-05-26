@@ -227,11 +227,7 @@ func (b *Server) run(wg *sync.WaitGroup) {
 				conn.Close()
 				time.Sleep(50 * time.Millisecond)
 			} else {
-				client := newClient(conn)
-				b.addClient(client)
-				b.wgAdd(2)
-				go client.handleRead()
-				go client.handleWrite()
+				b.addClient(newClient(conn))
 			}
 		}
 	}()

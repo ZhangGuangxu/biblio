@@ -20,12 +20,12 @@ func newBindReq(uid int64, c *Client) *bindReq {
 }
 
 type bindReqToPlayer struct {
-	recverForPlayer *messageBuffer
-	senderForPlayer *messageBuffer
+	recverForPlayer messageMediator
+	senderForPlayer messageMediator
 	endTime         time.Time
 }
 
-func newBindReqToPlayer(rP *messageBuffer, sP *messageBuffer, beginTime time.Time) *bindReqToPlayer {
+func newBindReqToPlayer(rP messageMediator, sP messageMediator, beginTime time.Time) *bindReqToPlayer {
 	return &bindReqToPlayer{
 		recverForPlayer: rP,
 		senderForPlayer: sP,
