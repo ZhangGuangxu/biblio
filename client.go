@@ -163,7 +163,7 @@ func (c *Client) handleRead() {
 			if useTmpBuf {
 				c.incoming.Append(buf)
 			}
-			if err := messageCodec.OnData(c.incoming, c); err != nil {
+			if err := messageCodec.Unpack(c.incoming, c); err != nil {
 				c.close()
 				log.Println(err)
 				break
@@ -281,20 +281,10 @@ func (c *Client) handleOutgoingMessage(timer *time.Timer) error {
 			break
 		}
 
-		data, err := messageCodec.Encode(msg.proto)
-		if err != nil {
+		if err := messageCodec.Pack(c.outgoing, msg); err != nil {
 			c.close()
 			return err
 		}
-		err = messageCodec.Release(msg.protoID, msg.proto)
-		if err != nil {
-			c.close()
-			return err
-		}
-
-		c.outgoing.AppendInt32(int32(2 + len(data)))
-		c.outgoing.AppendInt16(msg.protoID)
-		c.outgoing.Append(data)
 	}
 
 	return nil
