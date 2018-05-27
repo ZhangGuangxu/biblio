@@ -174,6 +174,7 @@ func (c *Client) handleRead() {
 		}
 		if n > 0 {
 			if useTmpBuf {
+				// ATTENTION: MUST specify the end index(here is n) of 'buf'!
 				c.incoming.Append(buf[:n])
 			}
 			if err := c.codec.Unpack(c.incoming, c); err != nil {
