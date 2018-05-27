@@ -401,7 +401,7 @@ func (p *Player) handleMsg() {
 		}
 
 		dispatchMessageToPlayer(p, msg)
-		if err := messageCodec.Release(msg.protoID, msg.proto); err != nil {
+		if err := protoFactory.Release(msg.protoID, msg.proto); err != nil {
 			break
 		}
 	}

@@ -45,6 +45,8 @@ type Client struct {
 
 	conn *net.TCPConn
 
+	codec Codec
+
 	incoming *netbuffer.Buffer // 接收网络数据的缓冲区
 	outgoing *netbuffer.Buffer // 将要发送的网络数据的缓冲区
 
@@ -61,6 +63,7 @@ type Client struct {
 func newClient(c *net.TCPConn) *Client {
 	client := &Client{
 		conn:           c,
+		codec:          newJSONCodec(),
 		incoming:       netbuffer.NewBuffer(),
 		outgoing:       netbuffer.NewBuffer(),
 		selfHandleMsgs: ccq.NewCircularQueue(),
@@ -171,9 +174,9 @@ func (c *Client) handleRead() {
 		}
 		if n > 0 {
 			if useTmpBuf {
-				c.incoming.Append(buf)
+				c.incoming.Append(buf[:n])
 			}
-			if err := messageCodec.Unpack(c.incoming, c); err != nil {
+			if err := c.codec.Unpack(c.incoming, c); err != nil {
 				c.close()
 				log.Println(err)
 				break
@@ -296,7 +299,7 @@ func (c *Client) handleOutgoingMessage(timer *time.Timer) error {
 			break
 		}
 
-		if err := messageCodec.Pack(c.outgoing, msg); err != nil {
+		if err := c.codec.Pack(c.outgoing, msg); err != nil {
 			c.close()
 			return err
 		}

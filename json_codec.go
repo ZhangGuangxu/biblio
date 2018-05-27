@@ -1,7 +1,6 @@
 package main
 
 import (
-	proto "biblio/protocol"
 	protojson "biblio/protocol/json"
 	"encoding/json"
 	"errors"
@@ -13,19 +12,19 @@ var errInvalidMsgLength = errors.New("invalid message length")
 var errChecksumNotMatch = errors.New("checksum not match")
 
 type jsonCodec struct {
-	proto.ProtoFactory
+	tmpBuf *netbuffer.Buffer
 }
 
 func newJSONCodec() *jsonCodec {
 	return &jsonCodec{
-		ProtoFactory: protojson.ProtoFactory,
+		tmpBuf: netbuffer.NewBuffer(),
 	}
 }
 
 func (c *jsonCodec) Unpack(buf *netbuffer.Buffer, client *Client) error {
-	for buf.ReadableBytes() >= headerByteCount {
+	for buf.ReadableBytes() >= headerByteCount+minDataLen {
 		length := int(buf.PeekInt32())
-		if length > maxDataLen || length < 0 {
+		if length > maxDataLen || length < minDataLen {
 			return errInvalidMsgLength
 		} else if buf.ReadableBytes() >= headerByteCount+length {
 			buf.RetrieveInt32()
@@ -63,7 +62,7 @@ func (c *jsonCodec) Pack(out *netbuffer.Buffer, msg *message) error {
 	if err != nil {
 		return err
 	}
-	err = c.Release(msg.protoID, msg.proto)
+	err = protojson.ProtoFactory.Release(msg.protoID, msg.proto)
 	if err != nil {
 		return err
 	}
@@ -71,22 +70,23 @@ func (c *jsonCodec) Pack(out *netbuffer.Buffer, msg *message) error {
 	sumLen := protoIDByteCount + len(data)
 	msgLen := sumLen + checkSumByteCount
 
-	buf := netbuffer.NewBufferWithSize(msgLen)
-	buf.AppendInt16(msg.protoID)
-	buf.Append(data)
+	c.tmpBuf.RetrieveAll()
 
-	s := buf.PeekAsByteSlice(sumLen)
+	c.tmpBuf.AppendInt16(msg.protoID)
+	c.tmpBuf.Append(data)
+
+	s := c.tmpBuf.PeekAsByteSlice(sumLen)
 	v := adler32.Checksum(s)
-	buf.AppendInt32(int32(v))
+	c.tmpBuf.AppendInt32(int32(v))
 
-	buf.PrependInt32(int32(msgLen))
+	c.tmpBuf.PrependInt32(int32(msgLen))
 
-	out.Append(buf.PeekAllAsByteSlice())
+	out.Append(c.tmpBuf.PeekAllAsByteSlice())
 	return nil
 }
 
 func (c *jsonCodec) Decode(protoID int16, data []byte) (interface{}, error) {
-	proto, err := c.Require(protoID)
+	proto, err := protojson.ProtoFactory.Require(protoID)
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 package: biblio
 import:
 - package: github.com/ZhangGuangxu/netbuffer
-  version: c5a8b62fbd4f3bafe840782651be1533e1ce2a07
+  version: 8ac7293d06a28d195b97054c67a5fc9447dec218
 - package: github.com/ZhangGuangxu/circularqueue
   version: 6558fca4aaa16d15baa457208b870f4ab4312197
 - package: github.com/ZhangGuangxu/timingwheelmm

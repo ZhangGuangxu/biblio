@@ -1,6 +1,8 @@
 package main
 
 import (
+	proto "biblio/protocol"
+	protojson "biblio/protocol/json"
 	twmm "github.com/ZhangGuangxu/timingwheelmm"
 	"log"
 	"net"
@@ -10,7 +12,7 @@ import (
 
 var maxConnectionCount int
 var serverAddress string // "ip:port", for example: "127.0.0.1:10001", or ":10001"
-var messageCodec Codec
+var protoFactory proto.ProtoFactory
 
 var clientWaitAuthMaxTime = 5 * time.Second // 等待接收客户端的auth消息的最大时长
 var bindProcessMaxTime = 5 * time.Second    // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
@@ -22,7 +24,7 @@ var playerUnloadTime = 10 * time.Minute
 func init() {
 	maxConnectionCount = 2000
 	serverAddress = "127.0.0.1:59632"
-	messageCodec = newJSONCodec()
+	protoFactory = protojson.ProtoFactory
 }
 
 // Server wrap a server
