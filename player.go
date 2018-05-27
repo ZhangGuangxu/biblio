@@ -177,6 +177,7 @@ func (p *Player) bind(req *bindReqToPlayer) {
 	// var t *time.Ticker
 	// if loopCnt > 0 {
 	// 	t = time.NewTicker(d)
+	//  defer t.Stop()
 	// }
 	// var succ bool
 
@@ -258,6 +259,7 @@ func (p *Player) unbind() {
 	// maxT := 5 * time.Second
 	// loopCnt := int(maxT / d)
 	// t := time.NewTicker(d)
+	// defer t.Stop()
 	// var succ bool
 
 	// for i := 0; i < loopCnt; i++ {
