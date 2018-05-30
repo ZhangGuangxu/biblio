@@ -2,20 +2,11 @@ package main
 
 import (
 	proto "biblio/protocol"
-	protojson "biblio/protocol/json"
 	"errors"
 	ccq "github.com/ZhangGuangxu/circularqueue"
-	"github.com/ZhangGuangxu/netbuffer"
-	"io"
-	"log"
-	"net"
 	"sync"
 	atom "sync/atomic"
-	"time"
 )
-
-var delay = 50 * time.Millisecond
-var writeAllLeftDataMaxTime = 5 * time.Second
 
 var selfHandleMsgs = map[int16]bool{
 	proto.C2SAuthID: true,
@@ -28,7 +19,7 @@ func isSelfHandleMsgs(protoID int16) bool {
 
 var mapProtocol2ClientHandler = map[int16](func(*Client, *message)){
 	proto.C2SAuthID: func(c *Client, msg *message) {
-		c.handleAuth(msg)
+		c.conn.handleAuth(msg)
 	},
 }
 
@@ -43,12 +34,7 @@ type Client struct {
 	muxState sync.Mutex
 	state    clientState
 
-	conn *net.TCPConn
-
-	codec Codec
-
-	incoming *netbuffer.Buffer // 接收网络数据的缓冲区
-	outgoing *netbuffer.Buffer // 将要发送的网络数据的缓冲区
+	conn connection
 
 	// Client自己处理的消息
 	selfHandleMsgs *ccq.CircularQueue
@@ -60,23 +46,27 @@ type Client struct {
 	toClose    int32
 }
 
-func newClient(c *net.TCPConn) *Client {
+func newClient() *Client {
 	client := &Client{
-		conn:           c,
-		codec:          newJSONCodec(),
-		incoming:       netbuffer.NewBuffer(),
-		outgoing:       netbuffer.NewBuffer(),
 		selfHandleMsgs: ccq.NewCircularQueue(),
 		sender:         newMessageChannel(),
 		recver:         newMessageChannel(),
 		routineCnt:     2,
 	}
-	client.state = newClientStateNotbinded(client)
-	client.sender.start()
-	client.recver.start()
-	client.startRead()
-	client.startWrite()
+	client.setState(newClientStateNotbinded(client))
 	return client
+}
+
+func (c *Client) setConn(conn connection) {
+	c.conn = conn
+	c.conn.setParent(c)
+}
+
+func (c *Client) start() {
+	c.sender.start()
+	c.recver.start()
+	c.startRead()
+	c.startWrite()
 }
 
 func (c *Client) setState(s clientState) {
@@ -125,73 +115,7 @@ func (c *Client) isClosed() bool {
 
 func (c *Client) startRead() {
 	serverInst.wgAddOne()
-	go c.handleRead()
-}
-
-func (c *Client) handleRead() {
-	defer serverInst.wgDone()
-	defer serverInst.removeClient(c)
-	defer atom.AddInt32(&c.routineCnt, -1)
-	defer c.conn.CloseRead()
-	defer c.sender.notifyClientReadClosed()
-
-	tmpBuf := make([]byte, maxDataLen)
-	var eof bool
-
-	for {
-		if needQuit() {
-			break
-		}
-		if c.needClose() {
-			break
-		}
-		if c.sender.shouldClose() {
-			break
-		}
-
-		var buf []byte
-		var useTmpBuf bool
-		if c.incoming.WritableBytes() > 0 {
-			buf = c.incoming.WritableByteSlice()
-		} else {
-			buf = tmpBuf
-			useTmpBuf = true
-		}
-
-		c.conn.SetReadDeadline(time.Now().Add(delay))
-		n, err := c.conn.Read(buf)
-		c.conn.SetReadDeadline(time.Time{})
-		if err != nil {
-			if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-				// nothing to do
-			} else if err == io.EOF {
-				eof = true
-			} else {
-				c.close()
-				log.Println(err)
-				break
-			}
-		}
-		if n > 0 {
-			if useTmpBuf {
-				// ATTENTION: MUST specify the end index(here is n) of 'buf'!
-				c.incoming.Append(buf[:n])
-			}
-			if err := c.codec.Unpack(c.incoming, c); err != nil {
-				c.close()
-				log.Println(err)
-				break
-			}
-			if err := c.handleMsgs(); err != nil {
-				break
-			}
-		}
-		if eof {
-			c.close()
-			//log.Println("EOF")
-			break
-		}
-	}
+	go c.conn.handleRead()
 }
 
 var errInvalideMessage = errors.New("invalid message")
@@ -215,31 +139,6 @@ func (c *Client) handleMsgs() error {
 	return nil
 }
 
-func (c *Client) handleAuth(msg *message) {
-	req, ok := msg.proto.(*protojson.C2SAuth)
-	if !ok {
-		c.close()
-		return
-	}
-
-	same, err := auther.checkToken(req.UID, req.Token)
-	if err != nil {
-		c.close()
-		return
-	}
-
-	auther.delToken(req.UID)
-	c.onBind()
-	if same {
-		c.recver.addMessage(messageCreater.createS2CAuth(true))
-		serverInst.reqBind(req.UID, c)
-	} else {
-		c.sender.notifyClose()
-		c.recver.addMessage(messageCreater.createS2CAuth(false))
-		c.recver.notifyClose()
-	}
-}
-
 func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 	msg := &message{protoID, proto}
 	if isSelfHandleMsgs(protoID) {
@@ -253,100 +152,5 @@ func (c *Client) addIncomingMessage(protoID int16, proto interface{}) {
 
 func (c *Client) startWrite() {
 	serverInst.wgAddOne()
-	go c.handleWrite()
-}
-
-func (c *Client) handleWrite() {
-	defer serverInst.wgDone()
-	defer serverInst.removeClient(c)
-	defer atom.AddInt32(&c.routineCnt, -1)
-	defer c.conn.CloseWrite()
-	defer c.recver.notifyClientWriteClosed()
-
-	t := time.NewTimer(delay)
-
-	for {
-		if needQuit() {
-			break
-		}
-		if c.needClose() {
-			break
-		}
-		if c.recver.shouldClose() {
-			c.tryWriteAllLeftData()
-			break
-		}
-
-		if c.recver.isBindSuccess() {
-			c.onBindSuccess()
-		}
-
-		if err := c.handleOutgoingMessage(t); err != nil {
-			break
-		}
-
-		if c.outgoing.ReadableBytes() > 0 {
-			if err := c.write(); err != nil {
-				break
-			}
-		}
-	}
-}
-
-func (c *Client) handleOutgoingMessage(timer *time.Timer) error {
-	for {
-		msg := c.recver.takeMessage(timer)
-		if msg == nil {
-			break
-		}
-
-		if err := c.codec.Pack(c.outgoing, msg); err != nil {
-			c.close()
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (c *Client) tryWriteAllLeftData() error {
-	t := time.NewTimer(delay)
-	if err := c.handleOutgoingMessage(t); err != nil {
-		return err
-	}
-
-	timer := time.NewTimer(writeAllLeftDataMaxTime)
-
-	for c.outgoing.ReadableBytes() > 0 {
-		select {
-		case <-timer.C:
-			return nil
-		default:
-		}
-
-		if err := c.write(); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (c *Client) write() error {
-	c.conn.SetWriteDeadline(time.Now().Add(delay))
-	n, err := c.conn.Write(c.outgoing.PeekAllAsByteSlice())
-	c.conn.SetWriteDeadline(time.Time{})
-	if err != nil {
-		if nerr, ok := err.(net.Error); ok && nerr.Timeout() {
-			// nothing to do
-		} else {
-			c.close()
-			log.Println(err)
-			return err
-		}
-	}
-	if n > 0 {
-		c.outgoing.Retrieve(n)
-	}
-	return nil
+	go c.conn.handleWrite()
 }

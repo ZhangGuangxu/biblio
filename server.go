@@ -5,7 +5,6 @@ import (
 	protojson "biblio/protocol/json"
 	twmm "github.com/ZhangGuangxu/timingwheelmm"
 	"log"
-	"net"
 	"sync"
 	"time"
 )
@@ -13,6 +12,7 @@ import (
 var maxConnectionCount int
 var serverAddress string // "ip:port", for example: "127.0.0.1:10001", or ":10001"
 var protoFactory proto.ProtoFactory
+var wsAddress string
 
 var clientWaitAuthMaxTime = 5 * time.Second // 等待接收客户端的auth消息的最大时长
 var bindProcessMaxTime = 5 * time.Second    // 收到客户端的auth请求后，要把client bind到player，多久后未完成认为处理超时
@@ -25,6 +25,7 @@ func init() {
 	maxConnectionCount = 2000
 	serverAddress = "127.0.0.1:59632"
 	protoFactory = protojson.ProtoFactory
+	wsAddress = "127.0.0.1:59631"
 }
 
 // Server wrap a server
@@ -53,6 +54,9 @@ type Server struct {
 	newXBindReqAdd chan bool
 
 	wg *sync.WaitGroup
+
+	playerAcceptor *playerAcceptor
+	wsAcceptor     *wsAcceptor
 }
 
 // NewServer returns a server instance.
@@ -64,6 +68,8 @@ func NewServer() (*Server, error) {
 		xBindReqs:      make(map[int64]interface{}, 100),
 		newXBindReqAdd: make(chan bool, 1),
 		wg:             &sync.WaitGroup{},
+		playerAcceptor: &playerAcceptor{},
+		wsAcceptor:     &wsAcceptor{},
 	}
 
 	var err error
@@ -173,32 +179,6 @@ func (b *Server) run(wg *sync.WaitGroup) {
 	defer wg.Done()
 	defer log.Println("Server.run() quit")
 
-	tcpaddr, err := net.ResolveTCPAddr("tcp4", serverAddress)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	ln, err := net.ListenTCP("tcp", tcpaddr)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	b.wgAddOne()
-	go func() {
-		defer b.wgDone()
-		defer log.Println("listener closer quit")
-
-		for {
-			select {
-			case <-getQuit():
-				ln.Close()
-				return
-			}
-		}
-	}()
-
 	b.startDoBind()
 
 	b.startClientTimingWheel()
@@ -208,31 +188,8 @@ func (b *Server) run(wg *sync.WaitGroup) {
 	b.startPlayerKickTimingWheel()
 	b.startPlayerUnloadTimingWheel()
 
-	b.wgAddOne()
-	go func() {
-		defer b.wgDone()
-		defer log.Println("accepter quit")
-
-		for {
-			conn, err := ln.AcceptTCP()
-			if err != nil {
-				if needQuit() {
-					break
-				} else {
-					log.Println(err)
-					setQuit()
-					break
-				}
-			}
-
-			if b.clientCount() >= maxConnectionCount {
-				conn.Close()
-				time.Sleep(50 * time.Millisecond)
-			} else {
-				b.addClient(newClient(conn))
-			}
-		}
-	}()
+	b.playerAcceptor.start(b)
+	b.wsAcceptor.start(b)
 
 	auther.startTimingWheel()
 

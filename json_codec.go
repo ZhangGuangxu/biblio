@@ -57,14 +57,14 @@ func (c *jsonCodec) Unpack(buf *netbuffer.Buffer, client *Client) error {
 	return nil
 }
 
-func (c *jsonCodec) Pack(out *netbuffer.Buffer, msg *message) error {
+func (c *jsonCodec) Pack(msg *message) ([]byte, error) {
 	data, err := c.Encode(msg.proto)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	err = protojson.ProtoFactory.Release(msg.protoID, msg.proto)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	sumLen := protoIDByteCount + len(data)
@@ -81,8 +81,7 @@ func (c *jsonCodec) Pack(out *netbuffer.Buffer, msg *message) error {
 
 	c.tmpBuf.PrependInt32(int32(msgLen))
 
-	out.Append(c.tmpBuf.PeekAllAsByteSlice())
-	return nil
+	return c.tmpBuf.PeekAllAsByteSlice(), nil
 }
 
 func (c *jsonCodec) Decode(protoID int16, data []byte) (interface{}, error) {

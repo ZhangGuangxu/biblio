@@ -6,3 +6,5 @@ import:
   version: 6558fca4aaa16d15baa457208b870f4ab4312197
 - package: github.com/ZhangGuangxu/timingwheelmm
   version: 17a889168b0bbe09ebf5565f2a82a92b7caee2b5
+- package: github.com/gorilla/websocket
+  version: v1.2.0

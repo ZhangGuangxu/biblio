@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+const (
+	messageChannelInCapacity  = 16
+	messageChannelOutCapacity = 16
+)
+
 type messageChannel struct {
 	inCh  chan *message
 	q     *ccq.CircularQueue
@@ -24,9 +29,9 @@ type messageChannel struct {
 
 func newMessageChannel() *messageChannel {
 	return &messageChannel{
-		inCh:              make(chan *message),
+		inCh:              make(chan *message, messageChannelInCapacity),
 		q:                 ccq.NewCircularQueue(),
-		outCh:             make(chan interface{}),
+		outCh:             make(chan interface{}, messageChannelOutCapacity),
 		closeFlag:         make(chan bool, 1),
 		bindSuccess:       make(chan bool),
 		clientWriteClosed: make(chan bool),
