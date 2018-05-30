@@ -217,8 +217,6 @@ func (t *tcpConnection) handleOutgoingMessage(d time.Duration) error {
 		default:
 		}
 	}
-
-	return nil
 }
 
 func (t *tcpConnection) tryWrite(d time.Duration) error {

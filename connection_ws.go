@@ -212,8 +212,6 @@ func (w *wsConnection) tryWriteAllLeftData() error {
 		default:
 		}
 	}
-
-	return nil
 }
 
 func (w *wsConnection) handleOutgoingMessage() error {
@@ -231,8 +229,6 @@ func (w *wsConnection) handleOutgoingMessage() error {
 		default:
 		}
 	}
-
-	return nil
 }
 
 func (w *wsConnection) handleOneMessage() error {
